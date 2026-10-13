@@ -2,6 +2,12 @@
 
 <h1 align="center">Stale</h1>
 
+> **Windows preview:** This public fork adds a native Windows app built with Material 3 Expressive and [jethac/slint](https://github.com/jethac/slint).
+> [Download Windows previews](https://github.com/jethac/stale/releases) · [Build and usage](docs/WINDOWS.md) · [Agent API](desktop/AGENT_API.md) · [Windows CI](https://github.com/jethac/stale/actions/workflows/windows.yml)
+>
+> The original macOS app and its documentation are preserved below, with credit to [HustleCoding/stale](https://github.com/HustleCoding/stale).
+
+
 <p align="center">See what you use on your Mac, what you don't, and when you last touched it.</p>
 
 <p align="center">
@@ -76,6 +82,10 @@ a folder takes the newest of its contents. Sizes are what files actually take on
 disk, so APFS clones and sparse files aren't overcounted.
 
 ## Build from source
+
+**Windows port:** a C++/Slint Material 3 Expressive desktop implementation is
+available on the Windows development branch. See [Windows build and behavior](docs/WINDOWS.md).
+The macOS build below remains unchanged.
 
 ```sh
 make              # build/stale and build/Stale.app, universal
