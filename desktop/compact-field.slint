@@ -1,0 +1,51 @@
+import { MaterialPalette, MaterialText } from "@material";
+
+// Desktop toolbar input: a single line with an explicit keyboard focus ring.
+export component CompactField inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback edited(string);
+    callback accepted(string);
+    forward-focus: input;
+    height: 36px;
+    min-width: 0px;
+    border-radius: 10px;
+    background: MaterialPalette.surface-container-high;
+    border-width: input.has-focus ? 2px : 1px;
+    border-color: input.has-focus ? MaterialPalette.primary : MaterialPalette.outline-variant.with-alpha(0.45);
+    accessible-role: text-input;
+    accessible-label: root.label;
+    accessible-value: root.text;
+    accessible-action-default => { input.focus(); }
+    TouchArea { clicked => { input.focus(); } }
+    clip := Rectangle {
+        x: 12px; y: 0px; width: parent.width - 24px; height: parent.height;
+        clip: true;
+        property <length> scroll-x;
+        MaterialText {
+            x: 0px; y: 0px; width: parent.width; height: parent.height;
+            visible: root.text == "";
+            text: root.label; font-size: 13px;
+            color: MaterialPalette.on-surface-variant;
+            horizontal-alignment: left;
+            vertical-alignment: center;
+        }
+        input := TextInput {
+            x: min(0px, max(parent.width - self.width - 2px, clip.scroll-x));
+            width: max(parent.width, self.preferred-width); height: parent.height;
+            single-line: true; wrap: no-wrap; font-size: 14px;
+            vertical-alignment: center;
+            color: MaterialPalette.on-surface;
+            selection-background-color: MaterialPalette.primary.with-alpha(0.35);
+            selection-foreground-color: MaterialPalette.on-surface;
+            enabled: root.enabled;
+            cursor-position-changed(position) => {
+                if position.x + clip.scroll-x < 0px { clip.scroll-x = -position.x; }
+                else if position.x + clip.scroll-x > clip.width - 2px { clip.scroll-x = clip.width - position.x - 2px; }
+            }
+            edited => { root.edited(self.text); }
+            accepted => { root.accepted(self.text); }
+        }
+    }
+}

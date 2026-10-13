@@ -1,0 +1,2 @@
+import "@STALE_SLINT_SOURCE_DIR@/ui-libraries/material/src/fonts/roboto-flex/RobotoFlex[GRAD,XOPQ,XTRA,YOPQ,YTAS,YTDE,YTFI,YTLC,YTUC,opsz,slnt,wdth,wght].ttf";
+export global StaleFont {}

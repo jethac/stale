@@ -1,0 +1,54 @@
+import { MaterialPalette, MaterialTheme, MaterialScheme } from "@material";
+
+// Neutral surfaces keep blue navigation separate from storage status colors.
+export global StaleTheme {
+    public pure function scheme(dark: bool) -> MaterialScheme {
+        let ink = dark ? #e8eaed : #202124;
+        let muted = dark ? #b4bac4 : #59616e;
+        let surface = dark ? #202226 : #ffffff;
+        let base = dark ? #17191d : #f3f4f6;
+        let accent = dark ? #a6c8ff : #245bb2;
+        let selected = dark ? #293d59 : #e3edfc;
+        {
+            primary: accent, surfaceTint: accent,
+            onPrimary: dark ? #102f59 : #ffffff,
+            primaryContainer: selected, onPrimaryContainer: dark ? #d8e7ff : #173d72,
+            secondary: accent, onSecondary: dark ? #102f59 : #ffffff,
+            secondaryContainer: selected, onSecondaryContainer: ink,
+            tertiary: accent, onTertiary: dark ? #102f59 : #ffffff,
+            tertiaryContainer: selected, onTertiaryContainer: ink,
+            error: dark ? #ffb4ab : #b3261e,
+            onError: dark ? #690005 : #ffffff,
+            errorContainer: dark ? #6f2421 : #ffdad6,
+            onErrorContainer: dark ? #ffdad6 : #410002,
+            background: base, onBackground: ink,
+            surface: surface, onSurface: ink,
+            surfaceVariant: dark ? #303339 : #e9ebef,
+            onSurfaceVariant: muted,
+            outline: dark ? #8b929d : #747c88,
+            outlineVariant: dark ? #444952 : #d4d8df,
+            shadow: #000000, scrim: #000000,
+            inverseSurface: dark ? #e8eaed : #303339,
+            inverseOnSurface: dark ? #202124 : #f3f4f6,
+            inversePrimary: dark ? #245bb2 : #a6c8ff,
+            primaryFixed: #d8e7ff, onPrimaryFixed: #102f59,
+            primaryFixedDim: #a6c8ff, onPrimaryFixedVariant: #173d72,
+            secondaryFixed: #e3edfc, onSecondaryFixed: #202124,
+            secondaryFixedDim: #bccbe0, onSecondaryFixedVariant: #35465f,
+            tertiaryFixed: #e3edfc, onTertiaryFixed: #202124,
+            tertiaryFixedDim: #bccbe0, onTertiaryFixedVariant: #35465f,
+            surfaceDim: dark ? #121418 : #dcdfe4,
+            surfaceBright: dark ? #383c43 : #ffffff,
+            surfaceContainerLowest: dark ? #1c1e22 : #ffffff,
+            surfaceContainerLow: dark ? #202226 : #edeff2,
+            surfaceContainer: dark ? #25282d : #e9ebef,
+            surfaceContainerHigh: dark ? #2c2f35 : #e3e6eb,
+            surfaceContainerHighest: dark ? #343840 : #dde1e7,
+        }
+    }
+    public function apply(dark: bool) {
+        MaterialPalette.dynamic = false;
+        MaterialTheme.dark = dark;
+        MaterialPalette.schemes = { light: root.scheme(dark), dark: root.scheme(dark) };
+    }
+}

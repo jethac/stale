@@ -1,0 +1,575 @@
+import { MaterialWindow, MaterialTheme, MaterialPalette, MaterialTypography, MaterialText,
+    ModalWideNavigationRail, IconButton, Icons, FilledButton, TonalButton, TextButton, TextField, FilledCard,
+    FilterChip, CheckBox, CheckState, ListView, CircularProgressIndicator, Dialog,
+    StateLayerArea, ScrollView, Switch } from "@material";
+import { StorageRing } from "storage-ring.slint";
+import { StaleFont } from "@material-font";
+import { StaleTheme } from "theme.slint";
+import { CompactField } from "compact-field.slint";
+import { CaptionButton } from "window-chrome.slint";
+
+export struct FileRow {
+    name: string,
+    detail: string,
+    size: string,
+    modified: string,
+    directory: bool,
+    selectable: bool,
+    selected: bool,
+    drive: bool,
+    capacity-known: bool,
+    used-fraction: float,
+    capacity-label: string,
+    free-label: string,
+    usage-label: string,
+}
+
+export struct BrowserTreeRow { id: string, label: string, detail: string, depth: int, expanded: bool, expandable: bool, loading: bool, selected: bool, available: bool }
+
+export struct Opportunity { id: string, title: string, detail: string, size: string, depth: int, state: int, expanded: bool }
+
+component QuietText inherits MaterialText {
+    font-size: 14px;
+    vertical-stretch: 0;
+    color: MaterialPalette.on_surface_variant;
+}
+
+export component App inherits MaterialWindow {
+    title: "Stale";
+    icon: @image-url("../site/public/icon.png");
+    no-frame: true;
+    resize-border-width: root.maximized ? 0px : 6px;
+    out property <bool> window-maximized: root.maximized;
+    out property <bool> window-minimized: root.minimized;
+    public function maximize-window() { root.minimized = false; root.maximized = true; }
+    public function restore-window() { root.minimized = false; root.maximized = false; }
+    public function minimize-window() { root.minimized = true; }
+    preferred-width: 1240px;
+    preferred-height: 820px;
+    min-width: 1000px;
+    background: MaterialPalette.background;
+    in-out property <bool> dark-mode;
+    callback change-theme(bool);
+    public function apply-theme(dark: bool) { root.dark-mode = dark; StaleTheme.apply(dark); }
+    default-font-size: 14px;
+    min-height: 660px;
+    in-out property <string> root-path;
+    in-out property <int> page: 0;
+    in property <bool> busy;
+    in property <bool> agent-enabled;
+    in property <string> report-label;
+    in property <bool> summary-only;
+    out property <bool> review-open: confirmation.is-open;
+    in property <bool> can-cancel;
+    in property <bool> has-snapshot;
+    in property <bool> duplicates-ready;
+    in property <bool> can-up;
+    in property <string> status: "Choose a folder to see what is taking up space.";
+    in property <string> snapshot-label: "No scan yet";
+    in property <string> allocated: "—";
+    in property <string> logical: "—";
+    in property <string> file-count: "—";
+    in property <string> error-count: "—";
+    in property <string> location;
+    in property <string> result-label;
+    in property <string> empty-message: "Choose a folder, then scan to explore its contents.";
+    in property <string> selection-label;
+    in property <int> selection-count;
+    in property <string> detail-title;
+    in property <string> detail-text;
+    in property <bool> detail-reveal;
+    in property <[FileRow]> rows;
+    in property <[BrowserTreeRow]> tree-rows;
+    in property <bool> tree-loading;
+    in property <bool> browser-can-scan;
+    in-out property <int> focused-tree: -1;
+    callback tree-expand(string, bool);
+    callback tree-open(string);
+    callback refresh-drives();
+    in-out property <string> search;
+    in-out property <int> sort-order;
+    in-out property <int> focused-row: -1;
+    property <bool> drive-overview: root.page < 2 && root.location == "This PC";
+    property <length> list-row-height: root.drive-overview ? 68px : root.page < 2 ? 36px : 44px;
+    in-out property <bool> folders-only;
+    callback choose-folder();
+    callback scan-folder();
+    callback load-cache();
+    callback cancel-work();
+    callback change-page(int);
+    callback query-changed();
+    callback inspect-row(int);
+    callback activate-row(int);
+    callback toggle-row(int);
+    callback go-up();
+    callback go-root();
+    callback find-copies();
+    callback clear-selection();
+    callback recycle-selected();
+    callback reveal-detail();
+    callback recover();
+    public function show-review() { if root.selection-count > 0 && !root.busy { confirmation.show(); } }
+    public function dismiss-review() { confirmation.close(); }
+
+    in property <[Opportunity]> opportunities;
+    in property <string> active-group;
+    in property <string> group-title: "Opportunities";
+    in property <string> group-description;
+    in property <string> drive-title: "Choose a drive or folder";
+    in property <string> drive-free: "—";
+    in property <string> drive-capacity;
+    in property <float> free-fraction;
+    in property <bool> capacity-known;
+    in property <bool> has-report;
+    in property <string> detail-name;
+    in property <string> detail-size;
+    in property <string> detail-state;
+    in property <string> detail-metadata;
+    in property <bool> detail-can-scan;
+    in property <bool> detail-checked;
+    in property <bool> detail-review;
+    in-out property <int> focused-group: -1;
+    callback open-group(string);
+    callback expand-group(string, bool);
+    callback scan-detail();
+    in-out property <int> navigation-index: 1;
+    in-out property <bool> navigation-expanded;
+    changed page => { root.navigation-index = root.page == 2 || root.page == 5 ? 0 : root.page == 3 ? 2 : root.page == 4 ? 3 : 1; }
+    public function navigate(index: int) {
+        if !root.busy && !root.review-open {
+            root.change-page(index == 0 ? (root.has-report ? 5 : 2) : index == 1 ? 1 : index == 2 ? 3 : 4);
+            root.navigation-expanded = false;
+        }
+    }
+    init => { StaleTheme.apply(false); MaterialTheme.plain-family = "Roboto Flex"; MaterialTheme.brand-family = "Roboto Flex"; }
+
+    all-focus := FocusScope {
+        width: root.width;
+        height: root.height;
+        key-pressed(event) => {
+            if event.text == Key.F5 { root.scan-detail(); return accept; }
+            if event.text == Key.Delete { root.show-review(); return accept; }
+            if event.text == "f" && event.modifiers.control { search-field.focus(); return accept; }
+            if event.text == Key.Escape { if root.navigation-expanded { root.navigation-expanded = false; } else if root.review-open { root.dismiss-review(); } else if root.search != "" { root.search = ""; root.query-changed(); } else { list-focus.focus(); } return accept; }
+            reject
+        }
+        titlebar := Rectangle {
+            x: 0px; y: 0px; width: root.width; height: 64px;
+            accessible-role: window-title-bar;
+            accessible-label: "Stale";
+            WindowMoveArea {
+                x: 0px; y: 0px; width: titlebar.width; height: titlebar.height;
+                TouchArea { x: 0px; y: 0px; width: titlebar.width; height: titlebar.height; double-clicked => { root.maximized = !root.maximized; } }
+                HorizontalLayout {
+                    x: 0px; y: 0px; width: titlebar.width; height: titlebar.height;
+                    padding-left: 18px; padding-right: 6px; spacing: 10px;
+                    Image { source: @image-url("../site/public/icon.png"); width: 36px; height: 36px; cross-axis-self-alignment: center; }
+                    MaterialText { text: "Stale"; font-size: 22px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 0; }
+                    CompactField {
+                        text <=> root.root-path; label: "Scan a folder";
+                        min-width: 0px; max-width: 680px; horizontal-stretch: 1; height: 40px;
+                        cross-axis-self-alignment: center; enabled: !root.busy;
+                        accepted(text) => { root.scan-folder(); }
+                    }
+                    IconButton { width: 48px; horizontal-stretch: 0; icon: @image-url("icons/folder.svg"); tooltip: "Choose folder"; enabled: !root.busy; cross-axis-self-alignment: center; clicked => { root.choose-folder(); } }
+                    FilledButton { text: "Scan"; height: 40px; horizontal-stretch: 0; cross-axis-self-alignment: center; enabled: !root.busy; clicked => { root.scan-folder(); } }
+                    Rectangle { min-width: 20px; horizontal-stretch: 1; }
+                    CaptionButton { label: "Minimize"; commands: "M 0.5 5.5 L 9.5 5.5"; clicked => { root.minimize-window(); } }
+                    CaptionButton { label: root.maximized ? "Restore" : "Maximize"; commands: root.maximized ? "M 0.5 3.5 L 6.5 3.5 L 6.5 9.5 L 0.5 9.5 Z M 2.5 3.5 L 2.5 0.5 L 9.5 0.5 L 9.5 7.5 L 6.5 7.5" : "M 0.5 0.5 L 9.5 0.5 L 9.5 9.5 L 0.5 9.5 Z"; clicked => { root.maximized = !root.maximized; } }
+                    CaptionButton { label: "Close"; close-button: true; commands: "M 0.5 0.5 L 9.5 9.5 M 9.5 0.5 L 0.5 9.5"; clicked => { root.close(); } }
+                }
+            }
+        }
+        rail := ModalWideNavigationRail {
+            x: 0px; y: 64px; height: parent.height - 64px;
+            has-menu: false;
+            top-space: 64px;
+            bottom-space: 88px;
+            enforce-touch-target: true;
+            current-index <=> root.navigation-index;
+            expanded <=> root.navigation-expanded;
+            items: [
+                { text: "Cleanup", icon: @image-url("icons/cleanup.svg"), enabled: !root.busy },
+                { text: "Files", icon: @image-url("icons/folder.svg"), enabled: !root.busy },
+                { text: "Duplicates", icon: @image-url("icons/copies.svg"), enabled: !root.busy },
+                { text: "Activity", icon: @image-url("icons/activity.svg"), enabled: !root.busy },
+            ];
+            index-changed(index) => { root.navigate(index); }
+        }
+        IconButton {
+            x: (rail.width - 48px) / 2; y: 68px;
+            width: 48px; height: 48px;
+            icon: Icons.menu;
+            tooltip: root.navigation-expanded ? "Close navigation" : "Open navigation";
+            clicked => { root.navigation-expanded = !root.navigation-expanded; }
+        }
+        VerticalLayout {
+            x: 0px; y: root.height - 88px; width: rail.width; height: 72px;
+            alignment: center; spacing: 4px;
+            Switch {
+                checked <=> root.dark-mode;
+                on-icon: @image-url("icons/moon.svg");
+                off-icon: @image-url("icons/sun.svg");
+                tooltip: root.dark-mode ? "Switch to light mode" : "Switch to dark mode";
+                horizontal-stretch: 0; cross-axis-self-alignment: center;
+                accessible-label: "Dark mode";
+                checked-state-changed(checked) => { root.change-theme(checked); }
+            }
+        }
+        VerticalLayout {
+            x: rail.width; y: 64px; width: parent.width - rail.width; height: parent.height - 64px;
+            padding: 12px;
+            padding-top: 4px;
+            spacing: 8px;
+            HorizontalLayout {
+                height: 76px;
+                spacing: 12px;
+                StorageRing {
+                    width: 56px; height: 56px; cross-axis-self-alignment: center;
+                    value: "";
+                    caption: "";
+                    description: root.drive-title;
+                    slices: [
+                        { id: "used", label: "Used", start: 0, fraction: root.capacity-known ? 1 - root.free-fraction : 1, tint: !root.capacity-known ? #dfe7e3 : (1 - root.free-fraction < 0.5 ? #2e7d32 : (1 - root.free-fraction < 0.75 ? #f0c419 : #b3261e)) },
+                        { id: "free", label: "Free", start: 1 - root.free-fraction, fraction: root.capacity-known ? root.free-fraction : 0, tint: #dfe7e3 },
+                    ];
+                }
+                VerticalLayout {
+                    spacing: 2px;
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    HorizontalLayout {
+                        height: 36px; spacing: 12px;
+                        MaterialText { overflow: elide; text: root.drive-title; font-size: 18px; font-weight: 600; min-width: 0px; horizontal-stretch: 1; }
+                    }
+                    HorizontalLayout {
+                        height: 28px; spacing: 12px;
+                        QuietText { font-size: 12px; overflow: elide; text: root.snapshot-label; min-width: 0px; horizontal-stretch: 1; vertical-alignment: center; }
+                        TextButton { height: 28px; vertical-stretch: 0; text: "Load saved"; horizontal-stretch: 0; enabled: !root.busy; clicked => { root.load-cache(); } }
+                    }
+                }
+            }
+            HorizontalLayout {
+                height: 20px;
+                spacing: 10px;
+                if root.busy : CircularProgressIndicator { width: 20px; height: 20px; indeterminate: true; }
+                QuietText { font-size: 12px; overflow: elide; text: root.status; min-width: 0px; horizontal-stretch: 1; }
+                if root.can-cancel : TextButton { height: 28px; vertical-stretch: 0; text: "Cancel"; horizontal-stretch: 0; clicked => { root.cancel-work(); } }
+            }
+            Rectangle {
+                background: MaterialPalette.outline-variant.with-alpha(0.3);
+                border-radius: 12px;
+                clip: true;
+                vertical-stretch: 1;
+                HorizontalLayout {
+                spacing: 1px;
+                if root.page < 2 : Rectangle {
+                    width: root.width < 1150px ? 200px : 232px;
+                    background: MaterialPalette.surface-container-low;
+                    border-radius: 0px;
+                    VerticalLayout {
+                        padding: 8px; spacing: 8px;
+                        HorizontalLayout {
+                            height: 32px; spacing: 4px;
+                            MaterialText { text: "Locations"; font-size: 13px; color: MaterialPalette.on-surface-variant; horizontal-stretch: 1; vertical-alignment: center; }
+                            TextButton { text: "Refresh"; height: 40px; horizontal-stretch: 0; enabled: !root.tree-loading && !root.busy; accessible-label: "Refresh drives"; clicked => { root.refresh-drives(); } }
+                        }
+                        if root.tree-loading && root.tree-rows.length == 0 : QuietText { text: "Finding drives…"; height: 32px; }
+                        tree-focus := FocusScope {
+                            vertical-stretch: 1;
+                            public function focus-row(index: int) {
+                                if root.tree-rows.length > 0 {
+                                    root.focused-tree = clamp(index, 0, root.tree-rows.length - 1);
+                                    if root.focused-tree * 32px < -tree.content-y { tree.content-y = -root.focused-tree * 32px; }
+                                    if (root.focused-tree + 1) * 32px > -tree.content-y + tree.visible-height { tree.content-y = min(0px, tree.visible-height - (root.focused-tree + 1) * 32px); }
+                                    if root.tree-rows[root.focused-tree].available { root.tree-open(root.tree-rows[root.focused-tree].id); }
+                                }
+                            }
+                            key-pressed(event) => {
+                                if event.text == Key.DownArrow { tree-focus.focus-row(root.focused-tree + 1); return accept; }
+                                if event.text == Key.UpArrow { tree-focus.focus-row(root.focused-tree - 1); return accept; }
+                                if event.text == Key.Home { tree-focus.focus-row(0); return accept; }
+                                if event.text == Key.End { tree-focus.focus-row(root.tree-rows.length - 1); return accept; }
+                                if root.focused-tree >= 0 && root.focused-tree < root.tree-rows.length {
+                                    let node = root.tree-rows[root.focused-tree];
+                                    if event.text == Key.RightArrow && node.available && node.expandable && !node.loading { root.tree-expand(node.id, true); return accept; }
+                                    if event.text == Key.LeftArrow && node.expanded { root.tree-expand(node.id, false); return accept; }
+                                    if event.text == Key.Return && node.available { root.tree-open(node.id); return accept; }
+                                }
+                                if event.text == Key.F6 { list-focus.focus(); return accept; }
+                                reject
+                            }
+                            tree := ListView {
+                                width: parent.width; height: parent.height;
+                                horizontal-scrollbar-policy: always-off;
+                                for node[index] in root.tree-rows : Rectangle {
+                                    width: tree.visible-width; height: 32px; border-radius: 3px;
+                                    background: node.selected ? MaterialPalette.primary.with-alpha(0.12) : transparent;
+                                    border-width: tree-focus.has-focus && root.focused-tree == index ? 1px : 0px;
+                                    border-color: MaterialPalette.primary;
+                                    StateLayerArea {
+                                        width: parent.width; height: parent.height;
+                                        enabled: node.available && !root.busy;
+                                        tooltip: node.label + (node.detail != "" ? "\n" + node.detail : "");
+                                        accessible-role: list-item;
+                                        accessible-label: node.label + ", " + node.detail + (node.expanded ? ", expanded" : node.expandable ? ", collapsed" : "");
+                                        accessible-action-default => { root.tree-open(node.id); }
+                                        clicked => { root.focused-tree = index; root.tree-open(node.id); tree-focus.focus(); }
+                                        double-clicked => { if node.expandable && !node.loading { root.tree-expand(node.id, !node.expanded); } }
+                                    }
+                                    if node.selected : Rectangle {
+                                        x: 0px; y: 8px; width: 2px; height: 16px;
+                                        border-radius: 1px; background: MaterialPalette.primary;
+                                    }
+                                    HorizontalLayout {
+                                        padding-left: 4px + min(node.depth, 6) * 14px;
+                                        padding-right: 6px; spacing: 5px;
+                                        Rectangle {
+                                            width: 20px;
+                                            if node.loading : CircularProgressIndicator { width: 12px; height: 12px; x: 4px; y: 10px; indeterminate: true; }
+                                            if !node.loading && node.expandable : Rectangle {
+                                                width: 20px; height: 32px;
+                                                StateLayerArea {
+                                                    enabled: node.available && !root.busy;
+                                                    accessible-role: button;
+                                                    accessible-label: (node.expanded ? "Collapse " : "Expand ") + node.label;
+                                                    clicked => { root.focused-tree = index; root.tree-expand(node.id, !node.expanded); tree-focus.focus(); }
+                                                }
+                                                Path {
+                                                    x: 6px; y: 12px; width: 8px; height: 8px;
+                                                    viewbox-width: 8; viewbox-height: 8;
+                                                    commands: node.expanded ? "M 1 2 L 4 5 L 7 2" : "M 2 1 L 5 4 L 2 7";
+                                                    fill: transparent;
+                                                    stroke: MaterialPalette.on-surface-variant; stroke-width: 1.2px;
+                                                }
+                                            }
+                                        }
+                                        Image {
+                                            source: node.depth == 0 ? @image-url("icons/computer.svg") : node.depth == 1 ? @image-url("icons/drive.svg") : @image-url("icons/folder.svg");
+                                            width: 16px; height: 16px; cross-axis-self-alignment: center;
+                                            colorize: MaterialPalette.on-surface-variant;
+                                        }
+                                        MaterialText {
+                                            text: node.label; min-width: 0px; horizontal-stretch: 1;
+                                            overflow: elide; font-size: 13px; vertical-alignment: center;
+                                            font-weight: node.depth == 0 ? 500 : 400;
+                                            color: node.available ? MaterialPalette.on-surface : MaterialPalette.on-surface-variant;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if !root.tree-loading && root.tree-rows.length == 0 : QuietText { text: "No drives found. Refresh to try again."; wrap: word-wrap; }
+                    }
+                }
+                if root.page == 2 || root.page == 5 : Rectangle {
+                    width: root.width < 1150px ? 200px : 232px;
+                    background: MaterialPalette.surface-container-low;
+                    border-radius: 0px;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+                        MaterialText { height: 28px; text: "Recommendations"; font-weight: 600; }
+                        HorizontalLayout {
+                            height: 36px;
+                            spacing: 4px;
+                            if root.has-report : TextButton { height: 40px; vertical-stretch: 0; text: root.width < 1150px ? "Saved" : "Saved map"; horizontal-stretch: 0; clicked => { root.change-page(5); } }
+                            TextButton { height: 40px; vertical-stretch: 0; text: root.width < 1150px ? "Current" : "This scan"; horizontal-stretch: 0; clicked => { root.change-page(2); } }
+                        }
+                        groups-focus := FocusScope {
+                            vertical-stretch: 1;
+                            key-pressed(event) => {
+                                if event.text == Key.DownArrow { root.focused-group = min(root.opportunities.length - 1, root.focused-group + 1); if (root.focused-group + 1) * 60px > -groups.content-y + groups.visible-height { groups.content-y = min(0px, groups.visible-height - (root.focused-group + 1) * 60px); } root.open-group(root.opportunities[root.focused-group].id); return accept; }
+                                if event.text == Key.UpArrow { root.focused-group = max(0, root.focused-group - 1); if root.focused-group * 60px < -groups.content-y { groups.content-y = -root.focused-group * 60px; } root.open-group(root.opportunities[root.focused-group].id); return accept; }
+                                if event.text == Key.Return && root.focused-group >= 0 { root.open-group(root.opportunities[root.focused-group].id); return accept; }
+                                if event.text == Key.RightArrow && root.focused-group >= 0 { root.expand-group(root.opportunities[root.focused-group].id, true); return accept; }
+                                if event.text == Key.LeftArrow && root.focused-group >= 0 { root.expand-group(root.opportunities[root.focused-group].id, false); return accept; }
+                                if event.text == Key.F6 { list-focus.focus(); return accept; }
+                                reject
+                            }
+                            groups := ListView {
+                                width: parent.width; height: parent.height;
+                                horizontal-scrollbar-policy: always-off;
+                                for item[index] in root.opportunities : Rectangle {
+                                    width: groups.visible-width; height: 60px;
+                                    border-radius: 8px;
+                                    background: item.id == root.active-group ? MaterialPalette.secondary-container : transparent;
+                                    StateLayerArea {
+                                        width: parent.width; height: parent.height;
+                                        accessible-role: list-item;
+                                        accessible-label: item.title + ", " + item.detail + ", " + item.size;
+                                        accessible-action-default => { root.open-group(item.id); }
+                                        clicked => { root.focused-group = index; root.open-group(item.id); groups-focus.focus(); }
+                                    }
+                                    HorizontalLayout {
+                                        padding: 8px; padding-left: item.depth == 1 ? 20px : 8px;
+                                        spacing: 5px;
+                                        VerticalLayout {
+                                            min-width: 0px; horizontal-stretch: 1; alignment: center;
+                                            MaterialText { min-width: 0px; overflow: elide; text: item.title; font-size: 14px; font-weight: item.depth == 0 ? 600 : 400; }
+                                            QuietText { min-width: 0px; overflow: elide; text: item.size + "  " + item.detail; font-size: 12px; }
+                                        }
+                                        if item.depth == 0 : TextButton { height: 28px; vertical-stretch: 0; text: item.expanded ? "−" : "+"; width: 28px; horizontal-stretch: 0; clicked => { root.expand-group(item.id, !item.expanded); } }
+                                    }
+                                }
+                            }
+                        }
+                        if root.opportunities.length == 0 : QuietText { text: "Scan a folder to find generated files and caches."; wrap: word-wrap; }
+                    }
+                }
+                Rectangle {
+                    background: MaterialPalette.surface-container-lowest;
+                    border-radius: 0px;
+                    horizontal-stretch: 1;
+                    min-width: 0px;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 8px;
+                        HorizontalLayout {
+                            height: 32px; spacing: 0px;
+                            if root.page < 2 && !root.drive-overview : TextButton { text: "Up"; height: 32px; horizontal-stretch: 0; enabled: root.can-up; clicked => { root.go-up(); } }
+                            if root.page < 2 && !root.drive-overview : TextButton { text: "This PC"; height: 32px; horizontal-stretch: 0; clicked => { root.go-root(); } }
+                            if root.page < 2 && !root.drive-overview : QuietText { text: "›"; width: 12px; height: 32px; vertical-alignment: center; horizontal-alignment: center; }
+                            MaterialText { min-width: 0px; overflow: elide; text: root.page < 2 ? root.location : root.group-title; font-size: 14px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                            if root.page < 2 && !root.drive-overview : TextButton { text: "Scan this folder"; height: 32px; horizontal-stretch: 0; enabled: !root.busy && root.browser-can-scan; clicked => { root.scan-folder(); } }
+                        }
+                        HorizontalLayout {
+                            height: 36px; spacing: 8px;
+                            search-field := CompactField { label: root.page == 4 ? "Filter activity" : "Filter this view"; min-width: 0px; horizontal-stretch: 1; text <=> root.search; edited(text) => { root.query-changed(); } }
+                            if root.drive-overview : QuietText { text: "Drive letter"; font-size: 12px; vertical-alignment: center; horizontal-stretch: 0; }
+                            if !root.drive-overview : TextButton { height: 40px; vertical-stretch: 0; text: root.sort-order == 0 ? "↓ Size" : root.sort-order == 1 ? "Name" : "Oldest"; horizontal-stretch: 0; clicked => { root.sort-order = mod(root.sort-order + 1, 3); root.query-changed(); } }
+                        }
+                        if root.page == 3 : HorizontalLayout {
+                            height: 40px;
+                            TextButton { text: "Find duplicates"; enabled: root.has-snapshot && !root.summary-only && !root.busy; clicked => { root.find-copies(); } }
+                            if root.summary-only : QuietText { text: "Scan a folder first to compare its files."; min-width: 0px; overflow: elide; }
+                        }
+                        if root.page == 4 : TextButton { height: 40px; vertical-stretch: 0; text: "Open Recycle Bin"; clicked => { root.recover(); } }
+                        if !root.drive-overview : HorizontalLayout {
+                            height: 24px; padding-left: 8px; padding-right: 8px;
+                            QuietText { text: "Name"; font-size: 12px; horizontal-stretch: 1; }
+                            QuietText { text: root.result-label; font-size: 12px; horizontal-stretch: 0; }
+                            QuietText { text: "Size"; width: 96px; font-size: 12px; horizontal-alignment: right; }
+                        }
+                        if root.rows.length == 0 : QuietText { text: root.empty-message; wrap: word-wrap; vertical-stretch: 1; vertical-alignment: center; horizontal-alignment: center; }
+                        list-focus := FocusScope {
+                            vertical-stretch: 1;
+                            key-pressed(event) => {
+                                if event.text == Key.DownArrow { root.focused-row = min(root.rows.length - 1, root.focused-row + 1); if (root.focused-row + 1) * root.list-row-height > -list.content-y + list.visible-height { list.content-y = min(0px, list.visible-height - (root.focused-row + 1) * root.list-row-height); } root.inspect-row(root.focused-row); return accept; }
+                                if event.text == Key.UpArrow { root.focused-row = max(0, root.focused-row - 1); if root.focused-row * root.list-row-height < -list.content-y { list.content-y = -root.focused-row * root.list-row-height; } root.inspect-row(root.focused-row); return accept; }
+                                if event.text == Key.Home { root.focused-row = 0; list.content-y = 0px; root.inspect-row(0); return accept; }
+                                if event.text == Key.End { root.focused-row = root.rows.length - 1; list.content-y = min(0px, list.visible-height - root.rows.length * root.list-row-height); root.inspect-row(root.focused-row); return accept; }
+                                if event.text == Key.Return { if root.page < 2 { root.activate-row(root.focused-row); } else { root.scan-detail(); } return accept; }
+                                if event.text == " " { root.toggle-row(root.focused-row); return accept; }
+                                if event.text == Key.F6 { inspector-focus.focus(); return accept; }
+                                reject
+                            }
+                            list := ListView {
+                                width: parent.width; height: parent.height;
+                                horizontal-scrollbar-policy: always-off;
+                                for row[index] in root.rows : Rectangle {
+                                    height: root.list-row-height; width: list.visible-width; border-radius: 6px;
+                                    background: root.focused-row == index ? MaterialPalette.secondary-container : transparent;
+                                    StateLayerArea {
+                                        width: parent.width; height: parent.height;
+                                        accessible-role: list-item;
+                                        accessible-label: row.name + ", " + (row.drive ? row.capacity-label + ", " + row.free-label : row.detail + ", " + row.size);
+                                        clicked => { root.focused-row = index; root.inspect-row(index); list-focus.focus(); }
+                                        double-clicked => { if root.page < 2 && row.directory { root.activate-row(index); } }
+                                        accessible-action-default => { if root.page < 2 && row.directory { root.activate-row(index); } else { root.inspect-row(index); } }
+                                    }
+                                    if row.drive : HorizontalLayout {
+                                        padding-left: 10px; padding-right: 10px; spacing: 12px;
+                                        Image { source: @image-url("icons/drive.svg"); width: 24px; height: 24px; colorize: MaterialPalette.on-surface-variant; cross-axis-self-alignment: center; }
+                                        VerticalLayout {
+                                            padding-top: 8px; padding-bottom: 8px; spacing: 6px;
+                                            HorizontalLayout {
+                                                height: 18px;
+                                                MaterialText { text: row.name; font-size: 14px; font-weight: 500; min-width: 0px; overflow: elide; horizontal-stretch: 1; }
+                                                QuietText { text: row.free-label; font-size: 13px; horizontal-stretch: 0; }
+                                            }
+                                            Rectangle {
+                                                height: 6px; border-radius: 3px; clip: true;
+                                                background: row.capacity-known ? #dfe7e3 : MaterialPalette.outline-variant.with-alpha(0.3);
+                                                if row.capacity-known : Rectangle {
+                                                    x: 0px; y: 0px; height: parent.height; width: parent.width * clamp(row.used-fraction, 0, 1);
+                                                    background: row.used-fraction < 0.5 ? #2e7d32 : row.used-fraction < 0.75 ? #f0c419 : #b3261e;
+                                                }
+                                            }
+                                            HorizontalLayout {
+                                                height: 16px;
+                                                QuietText { text: row.capacity-label; font-size: 12px; min-width: 0px; overflow: elide; horizontal-stretch: 1; }
+                                                QuietText { text: row.usage-label; font-size: 12px; horizontal-stretch: 0; }
+                                            }
+                                        }
+                                    }
+                                    if !row.drive : HorizontalLayout {
+                                        spacing: 6px; padding-right: 8px; padding-left: 6px;
+                                        if row.selectable : CheckBox { width: 40px; height: root.list-row-height; check-state: row.selected ? CheckState.checked : CheckState.unchecked; enabled: !root.busy; accessible-label: "Select " + row.name; checked-state-changed(state) => { root.toggle-row(index); } }
+                                        if root.page < 2 : Image { source: @image-url("icons/folder.svg"); visible: row.directory; width: 18px; height: 18px; colorize: MaterialPalette.on-surface-variant; cross-axis-self-alignment: center; }
+                                        VerticalLayout {
+                                            min-width: 0px; horizontal-stretch: 1; alignment: center;
+                                            MaterialText { min-width: 0px; overflow: elide; text: row.name; font-size: 14px; font-weight: root.page < 2 ? 400 : 600; }
+                                            if root.page >= 2 : QuietText { min-width: 0px; overflow: elide; text: row.detail; font-size: 12px; }
+                                        }
+                                        MaterialText { text: row.size; width: 88px; font-size: 14px; horizontal-alignment: right; vertical-alignment: center; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                inspector-focus := FocusScope {
+                    visible: root.detail-name != "";
+                    width: root.detail-name == "" ? 0px : root.width < 1150px ? 240px : 280px;
+                    key-pressed(event) => { if event.text == Key.F6 { list-focus.focus(); return accept; } reject }
+                    Rectangle {
+                        width: parent.width; height: parent.height;
+                        background: MaterialPalette.surface-container-low;
+                        border-radius: 12px;
+                        VerticalLayout {
+                            padding: 16px; spacing: 12px;
+                            inspector-scroll := ScrollView {
+                                vertical-stretch: 1; horizontal-scrollbar-policy: always-off;
+                                VerticalLayout {
+                                    width: inspector-scroll.visible-width; alignment: start;
+                                    spacing: 12px;
+                            MaterialText { vertical-stretch: 0; text: root.detail-name == "" ? "Folder details" : root.detail-name; min-width: 0px; wrap: word-wrap; font-size: 18px; font-weight: 600; }
+                            QuietText { text: root.detail-title; min-width: 0px; wrap: word-wrap; font-size: 12px; }
+                            MaterialText { vertical-stretch: 0; text: root.detail-size; font-size: 22px; font-weight: 600; }
+                            QuietText { text: root.detail-state; color: root.detail-checked ? (root.dark-mode ? #8ed49a : #2e7d32) : root.detail-review ? (root.dark-mode ? #ebc36b : #805b00) : MaterialPalette.on_surface_variant; wrap: word-wrap; }
+                                    MaterialText { text: root.detail-name == "" ? "Pick a folder to see what Stale knows about it." : "Why it’s here"; min-width: 0px; wrap: word-wrap; font-weight: 600; }
+                                    QuietText { text: root.detail-text; min-width: 0px; wrap: word-wrap; }
+                                    QuietText { text: root.detail-metadata; min-width: 0px; wrap: word-wrap; font-size: 12px; }
+                                }
+                            }
+                            if root.detail-can-scan : FilledButton { height: 40px; vertical-stretch: 0; text: "Scan this folder"; enabled: !root.busy; clicked => { root.scan-detail(); } }
+                            if root.detail-reveal : TextButton { height: 40px; vertical-stretch: 0; text: "Show in Explorer"; clicked => { root.reveal-detail(); } }
+                        }
+                    }
+                }
+            }
+            }
+            if root.selection-count > 0 : HorizontalLayout {
+                height: 48px;
+                spacing: 12px;
+                MaterialText { text: root.selection-label; horizontal-stretch: 1; }
+                if root.selection-count > 0 : TextButton { height: 40px; vertical-stretch: 0; text: "Clear"; horizontal-stretch: 0; enabled: !root.busy; clicked => { root.clear-selection(); } }
+                TextButton { height: 40px; vertical-stretch: 0; text: "Open Recycle Bin"; horizontal-stretch: 0; clicked => { root.recover(); } }
+                FilledButton { height: 40px; vertical-stretch: 0; text: "Review & recycle"; horizontal-stretch: 0; enabled: root.selection-count > 0 && !root.busy; clicked => { root.show-review(); } }
+            }
+        }
+    }
+    confirmation := Dialog {
+        title: "Move selected items to Recycle Bin?";
+        text: root.selection-label + "\n\nStale checks each folder again first. Anything that changed or is in use stays where it is. Restore recycled items through Windows Recycle Bin.";
+        actions: ["Cancel"];
+        default-action-text: "Move to Recycle Bin";
+        action-clicked(index) => { root.dismiss-review(); }
+        default-action-clicked => { root.dismiss-review(); root.recycle-selected(); }
+    }
+}
+
+
+
+

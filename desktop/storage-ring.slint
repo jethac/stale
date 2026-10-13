@@ -1,0 +1,77 @@
+import { MaterialText, MaterialTypography, MaterialPalette } from "@material";
+
+// A capacity chart, not a progress indicator: slices are exact fractions of
+// disk capacity. No minimum sweep or rounded caps inflate tiny free-space arcs.
+export struct StorageSlice {
+    id: string,
+    label: string,
+    start: float,
+    fraction: float,
+    tint: color,
+}
+
+component CapacityArc inherits Path {
+    in property <float> start;
+    in property <float> fraction;
+    in property <color> tint;
+    property <angle> a: (root.start * 360 - 90) * 1deg;
+    property <angle> sweep-angle: clamp(root.fraction, 0, 1) * 360deg;
+    property <angle> middle: root.a + root.sweep-angle / 2;
+    property <angle> end: root.a + root.sweep-angle;
+    viewbox-x: 0;
+    viewbox-y: 0;
+    viewbox-width: 100;
+    viewbox-height: 100;
+    fill: root.tint;
+    visible: root.fraction > 0;
+    // Two half-arcs also render exact full circles correctly.
+    MoveTo { x: 50 + 48 * cos(root.a); y: 50 + 48 * sin(root.a); }
+    ArcTo { radius-x: 48; radius-y: 48; x: 50 + 48 * cos(root.middle); y: 50 + 48 * sin(root.middle); sweep: true; }
+    ArcTo { radius-x: 48; radius-y: 48; x: 50 + 48 * cos(root.end); y: 50 + 48 * sin(root.end); sweep: true; }
+    LineTo { x: 50 + 35 * cos(root.end); y: 50 + 35 * sin(root.end); }
+    ArcTo { radius-x: 35; radius-y: 35; x: 50 + 35 * cos(root.middle); y: 50 + 35 * sin(root.middle); sweep: false; }
+    ArcTo { radius-x: 35; radius-y: 35; x: 50 + 35 * cos(root.a); y: 50 + 35 * sin(root.a); sweep: false; }
+    LineTo { x: 50 + 48 * cos(root.a); y: 50 + 48 * sin(root.a); }
+}
+
+export component StorageRing inherits Rectangle {
+    in property <[StorageSlice]> slices;
+    in property <string> value;
+    in property <string> caption: "free";
+    in property <string> description;
+    callback activated(float);
+    preferred-width: 112px;
+    preferred-height: 112px;
+    accessible-role: groupbox;
+    accessible-label: root.description;
+    for slice in root.slices : CapacityArc {
+        width: root.width;
+        height: root.height;
+        start: slice.start;
+        fraction: slice.fraction;
+        tint: slice.tint;
+    }
+    VerticalLayout {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+        padding-left: root.width * 0.19;
+        padding-right: root.width * 0.19;
+        alignment: center;
+        spacing: 0px;
+        MaterialText { text: root.value; font-size: root.width < 110px ? 12px : 13px; font-weight: 600; horizontal-alignment: center; }
+        MaterialText { text: root.caption; style: MaterialTypography.label_small; color: MaterialPalette.on_surface_variant; horizontal-alignment: center; }
+    }
+    hit := TouchArea {
+        clicked => {
+            let dx = self.mouse-x / root.width - 0.5;
+            let dy = self.mouse-y / root.height - 0.5;
+            let radius-squared = dx * dx + dy * dy;
+            if radius-squared >= 0.1225 && radius-squared <= 0.2304 {
+                let angle = atan2(dy, dx) / 360deg + 0.25;
+                root.activated(angle < 0 ? angle + 1 : angle);
+            }
+        }
+    }
+}
