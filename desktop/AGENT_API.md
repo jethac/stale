@@ -31,6 +31,9 @@ message. Inspect state after a timeout before retrying an action.
 ```
 
 Rows have stable path IDs, byte counts, reasons, and selection eligibility.
+For cleanup rows, `selectable` means the checkbox is available now; `validated`
+separately reports existing scan evidence. Saved candidates can be selectable
+without being validated. Imported tokens never establish that evidence.
 The Files view browses live folders independently of a scan. Use `drives` to list
 every logical drive, `browse` with an absolute `path` (or `this-pc`), and `tree`
 to read the visible flattened tree. `tree-open` takes a node `id`;
@@ -102,7 +105,7 @@ expands/collapses the rail; selecting a destination collapses it. State exposes
 custom caption controls. State exposes `window_maximized` and `window_minimized`.
 
 `theme` with `mode` set to `light` or `dark` operates the same appearance
-control as the header toggle. `state.theme` reports the current mode. The
+control as the navigation-rail toggle. `state.theme` reports the current mode. The
 preference is saved per Windows user and restored on launch.
 
 `load-report` with `path`, or startup `--report <path>`, opens a v1 JSON summary
@@ -113,9 +116,10 @@ in the Recommendations page. The report contains `version`, `root`, `scanned_at`
 `path`, `reason`, `bytes`, and optional `modified`.
 
 Reports are limited to 16 MiB and 100,000 entries/candidates. Paths must remain
-under the declared absolute root. Imported recommendations start visibly
-read-only and do not establish duplicate evidence. Scan a specific folder to
-produce current, validated cleanup candidates; the saved map remains available.
+under the declared absolute root. Imported recommendations support immediate checkbox selection but do not
+establish duplicate evidence. Validation runs when deletion is confirmed.
+Loading a report preserves the current scan; Current scan and Saved report
+select independent sources.
 
 Run `scripts/test-agent.ps1` to exercise the real app with disposable fixtures.
 CTest also covers pipe framing, request bounds, endpoint collisions and shutdown.
@@ -130,3 +134,22 @@ Cleanup checkboxes and `select` select supported saved candidates immediately.
 runs when the human confirms **Delete permanently**. `review` opens this dialog;
 there is no agent command to confirm it. Deletion bypasses the Recycle Bin.
 The legacy `check-select` action remains available for explicit prevalidation.
+
+## Overview, inspection and recovery
+
+`state.scan_overview` identifies the scanned-root summary, `scope` names the
+displayed location, and `inspector_visible` / `detail_selected` distinguish
+inspection from deletion selection. `close-inspector` dismisses details without
+changing checkboxes. `overview-group` accepts a category `id` from the current
+scan's `groups` and opens that category in Cleanup when the overview is shown.
+
+Browse, navigate, filter, sort and inspect remain available during scans.
+Wait for `rows_ready` / `browse_busy` independently of the operation's `busy`.
+Changing deletion selection and starting another operation remain disabled.
+Scan completion preserves navigation made during the scan.
+
+After deletion, Cleanup retains unselected candidates and failures. A failure's
+`deletion_error` explains why it needs a rescan before retrying. Activity rows
+have stable path IDs, separate `path`, `success`, and `message` fields. Failures
+may describe partially removed folders; successful rows are removed from Cleanup.
+Activity is session-only. No agent endpoint confirms deletion.

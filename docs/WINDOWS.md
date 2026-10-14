@@ -6,7 +6,7 @@ components from `jethac/slint`. The existing Makefile still builds the macOS app
 The custom title bar contains the scan path, folder picker, and Scan action.
 Files includes an Explorer-style This PC tree showing all logical drives.
 Expand folders to browse their immediate contents without starting a recursive
-scan; use Scan this folder to measure them. Unmeasured folder sizes appear as
+scan; use Scan in the title bar to measure them. Unmeasured folder sizes appear as
 an em dash. Existing scan totals are identified in the folder details. Refresh
 updates the drive inventory, including removable and mapped network drives.
 The tree supports arrow keys, Home/End, Enter, and F6 to reach the file list.
@@ -18,6 +18,10 @@ category or filtered list. Click **Delete selected**, then **Delete permanently*
 Deletion bypasses the Recycle Bin, including for items too large to recycle.
 Saved candidates are validated during deletion; selection is immediate.
 Failures are reported per item in Activity. Recommendations, including models and manual-review folders, can be selected.
+Unselected candidates remain after a batch. Failed candidates keep their reason
+and require rescanning before retrying; a failure may mean partial deletion.
+Current scan and Saved report are separate sources, and importing a report
+preserves the current scan. Details overlay the list in narrower windows.
 
 ## Build
 
@@ -66,7 +70,8 @@ visible window. The included `scripts/stale-agent.ps1` client exposes structured
 state, pagination, navigation, scan/cancel, selection and screenshots. Agent
 review opens the normal dialog; it cannot confirm deletion. See
 [the agent protocol](../desktop/AGENT_API.md) for commands and report import.
-Saved recommendations are explicitly read-only until a folder is rescanned.
+Saved recommendations support immediate selection; imported validation tokens
+are ignored. The confirmation and execution-time path checks still apply.
 
 ## Windows behavior
 

@@ -3,7 +3,7 @@
 </p>
 
 <h1 align="center">Stale Material</h1>
-<p align="center"><strong>Make room for what comes next.</strong><br>Material 3 Expressive on Slint. Native Windows. About 35 MiB at idle.</p>
+<p align="center"><strong>Make room for what comes next.</strong><br>Material 3 Expressive on Slint. Native Windows. About 35 MiB idle with software rendering.</p>
 
 <p align="center">
   <a href="https://github.com/jethac/stale-material/releases"><strong>Download for Windows</strong></a> &nbsp;·&nbsp;
@@ -42,7 +42,7 @@ Stale Material brings **Material 3 Expressive (M3E) to a native Windows disk exp
 | See the space | Work through it |
 | --- | --- |
 | **Every drive at a glance** — capacity bars, free space, and percentage used, in drive-letter order. | **Browse before scanning** — expand folders without launching a recursive scan. |
-| **Size where it matters** — measure folders, sort results, and inspect what is taking up room. | **Find cleanup candidates** — group build output, dependencies, and caches by category and project. |
+| **A useful scan overview** — category totals and measured folder-size bars show where to start. | **Find cleanup candidates** — group build output, dependencies, and caches by category and project. |
 | **Material 3 Expressive** — a navigation rail, compact tree, custom title bar, and sun/moon theme switch. | **Tick. Delete. Done.** — select folders with checkboxes, delete in bulk, and confirm once. |
 
 The capacity colors mean the same thing everywhere: **green** below 50% used, **yellow** from 50% to below 75%, and **red** at 75% or more. Unknown sizes stay unknown until measured.
@@ -61,6 +61,16 @@ The capacity colors mean the same thing everywhere: **green** below 50% used, **
 In a visible, idle **seven-drive overview**, the Release build used approximately **35 MiB of resident memory** and **15 MiB of private committed memory** on Windows 11. A complete native desktop interface in a surprisingly small footprint.
 
 <sub>Measured with PowerShell `Get-Process` (`WorkingSet64` and `PrivateMemorySize64`), using Slint’s software renderer at a 1240 × 820 logical window size. No scan was loaded. These are an idle snapshot, not a peak-memory benchmark; scanning and larger result sets require more memory. The two metrics describe different things and should not be added together.</sub>
+
+Rechecked on 14 October 2026: **34.8 MiB resident / 15.1 MiB private** with
+software rendering. Slint's automatic renderer used about **102 / 151 MiB** on
+the same machine; graphics drivers and renderer choice affect these numbers.
+To use the software renderer from PowerShell:
+
+```powershell
+$env:SLINT_BACKEND = 'winit-software'
+.\Stale.exe
+```
 
 ## Get started
 
@@ -93,7 +103,9 @@ Agent access is **opt-in**, local, and restricted to the launching Windows user.
 
 Select individual checkboxes, or use **Select all shown** for the current category,
 project, or filtered list. Selection is immediate—even with saved recommendations.
-The app checks the selected contents when deletion starts, with no separate
+**Current scan** and **Saved report** are separate sources; loading a report
+keeps the current scan available. The app checks selected contents when deletion
+starts, with no separate
 “check and select” step.
 
 ![Cleanup in Stale Material, with four folders selected and the Delete selected button visible](docs/images/stale-material-cleanup.png)
@@ -104,8 +116,9 @@ Items bypass the Recycle Bin, including folders too large to recycle. This canno
 be undone through the app or the Recycle Bin.
 
 The status line reports the current folder and deletion progress. **Activity**
-records successes and failures; a failure does not imply that everything in a
-folder remains untouched. After an interrupted or partial operation, rescan to
+records per-path successes and failures. Cleanup keeps unselected candidates and
+shows failed items with their reasons; rescan those items before retrying. A
+failure does not imply that everything in a folder remains untouched. After an interrupted or partial operation, rescan to
 see what remains.
 
 - Hard-linked build files can be deleted. Other links remain intact, so removing

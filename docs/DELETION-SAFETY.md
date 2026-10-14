@@ -26,6 +26,8 @@ not prove that everything inside is disposable.
 | Stale filter list | Remove the delay between filter editing and invalidating the old result rows, so a bulk-selection click cannot select the previous filter's list during that delay. |
 | Permission errors treated as missing files | Shell callbacks tolerate only file/path-not-found results. Other metadata lookup failures stop that item rather than silently passing. Existing ancestors are checked for newly introduced reparse/cloud attributes without rescanning contents. |
 | Misleading success | Check that the selected path no longer exists before reporting success. A failed or unverifiable result explicitly warns that contents may already have been removed. |
+| Losing cleanup context after a batch | Successful rows are removed, unselected candidates remain, and failures retain their path and reason. Failed items are unavailable for selection until rescanned; Activity exposes structured per-path outcomes. |
+| Accidental keyboard confirmation | The in-window confirmation initially focuses Cancel. Tab reaches Delete permanently deliberately; Escape dismisses. The full selected-path list remains visible, including filtered-out selections. |
 
 The confirmation remains a single step. These changes do not turn selection into
 a separate validation workflow or change permanent deletion into recycling.

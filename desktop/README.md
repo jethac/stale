@@ -1,34 +1,43 @@
-The desktop target consumes the `stale::win` value-type API. The Slint compiler,
-C++ runtime, and `@material` library must come from the same pinned fork revision
-configured by the root CMake project.
+# Native Windows desktop
 
-The UI uses the fork's Material controls and virtualized `ListView`. Its C++ model
-stores source indexes and formats visible rows lazily. Scanning, cache I/O,
-duplicate comparison, filtering, and sorting run on an owned worker. GUI updates
-use weak handles; a generation counter rejects obsolete query results. Shutdown
-cancels current work and joins the worker before destroying its state.
+The desktop consumes the `stale::win` value-type API. Slint's compiler, runtime,
+and Material library come from the same pinned jethac/slint revision.
 
-For a non-destructive executable smoke test:
+The title bar contains the scan target. Files browses live folders without
+starting a recursive scan. A completed scan adds category summaries and measured
+size bars at its root. Capacity colors describe the volume; blue file bars
+compare measured allocated sizes with the containing folder's measured total.
+Unknown sizes are never drawn as measured zeroes.
 
-```powershell
-Stale.exe --smoke-test --root C:\path\to\disposable-fixture --screenshot overview.ppm
-Stale.exe --smoke-test --root C:\path\to\disposable-fixture --page 2 --screenshot cleanup.ppm
-Stale.exe --smoke-test --root C:\path\to\disposable-fixture --page 3 --screenshot duplicates.ppm
-Stale.exe --smoke-test --root C:\path\to\disposable-fixture --load-cache
-Stale.exe --smoke-test --root C:\path\to\large-fixture --cancel-after-ms 20
-Stale.exe --smoke-test --root C:\path\to\large-fixture --close-after-ms 20
-```
+Cleanup has explicit **Current scan** and **Saved report** sources. Importing a
+report preserves the current scan. Inspection is independent of deletion
+selection; the inspector can be closed and overlays the list below 1150 logical
+pixels. Space toggles a candidate, Enter opens a folder or inspects a candidate,
+Ctrl+F focuses filtering, F5 scans the title-bar target, and Delete opens review.
 
-With no `--root`, smoke mode renders the empty state and never scans the default
-home folder. `--page` accepts 0 (overview), 1 (browse), 2 (cleanup), 3 (duplicates),
-or 4 (recycling activity). Page 3 performs real duplicate detection. Screenshots
-are binary PPM, captured from Slint's window snapshot API. Exit codes are 0 for a
-successful smoke run, 1 for a scan/load/startup failure, 2 for screenshot failure,
-and 3 for the two-minute smoke timeout. `--close-after-ms` deliberately exits early
-to exercise cancellation and worker teardown. No smoke option selects or recycles
-files. Normal use opens with no automatic scan.
+Tick checkboxes, choose **Delete selected**, and confirm once. Deletion is
+permanent. The in-window confirmation lists every selected path, including
+filtered-out selections. Cancel receives initial focus; Tab cycles between the
+two actions and Escape cancels. There is no agent confirmation command.
 
-The file list supports arrows, Home/End, Enter to enter a folder, and Space to
-toggle a cleanup candidate. Tab moves through Material controls. Recycling has a
-Material confirmation dialog and shows individual outcomes in Activity. Recovery
-opens Windows Recycle Bin; Stale does not claim to provide application-level Undo.
+Successful deletion removes completed candidates from Cleanup. Unselected
+candidates remain; failed candidates show their reason and require a rescan
+before retrying. Activity carries per-path successes and failures. Counts and
+saved sizes are observations, not guaranteed reclaimed space. A failed item
+may be partly deleted. There is no deletion cancellation or application Undo.
+
+Scanning/deletion, live directory reads, and view queries have separate owned
+workers. Query inputs are immutable snapshots. Generation checks reject stale
+results; workers join during shutdown. Browsing and filtering remain usable
+while a scan runs. Starting another scan or changing deletion selection stays
+disabled during operations.
+
+See [AGENT_API.md](AGENT_API.md) for the local interface. `screenshot` captures a
+PPM snapshot; `resize` supports 1000×660 through 3840×2160 logical pixels.
+Normal startup does not scan automatically.
+
+For non-destructive executable smoke runs, use `--smoke-test --root <fixture>`;
+optional `--page 0..4`, `--screenshot <file.ppm>`, `--load-cache`,
+`--cancel-after-ms`, and `--close-after-ms` exercise existing paths.
+Smoke mode never selects or deletes files. Exit codes: 0 success, 1 scan/load/
+startup failure, 2 screenshot failure, 3 timeout.
