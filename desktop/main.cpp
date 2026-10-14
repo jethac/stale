@@ -147,11 +147,11 @@ public:
             const auto& item = source.candidates->at(index);
             const auto parent = utf8(std::filesystem::path(wide(item.path)).parent_path().filename().wstring());
             result.name = parent.empty() ? basename(item.path) : parent + " / " + basename(item.path);
-            result.detail = (item.validation_token.empty() ? "Saved size · " : "Ready to select · ") + item.path;
+            result.detail = item.deletion_error.empty() ? item.path : "Could not delete: " + item.deletion_error;
             result.size = bytes(item.bytes);
             result.modified = date(item.modified);
-            result.selectable = !item.validation_token.empty();
-            result.checkable = item.duplicate_group < 0;
+            result.selectable = item.deletion_error.empty() && !item.validation_token.empty();
+            result.checkable = item.deletion_error.empty() && item.duplicate_group < 0;
             result.selected = selected->count(item.path) != 0;
         } else if (source.outcomes) {
             const auto& item = source.outcomes->at(index);
@@ -164,6 +164,11 @@ public:
             result.size = source.size_known && !source.size_known->at(index) ? "—" : bytes(item.allocated_bytes);
             result.modified = date(item.modified);
             result.directory = item.directory && !item.reparse && !item.cloud;
+            result.measured = item.metadata_ok && (!source.size_known || source.size_known->at(index));
+            if (result.measured && item.parent >= 0) {
+                const auto total = source.snapshot->entries[item.parent].allocated_bytes;
+                result.size_fraction = total ? static_cast<float>(std::min(1.0, double(item.allocated_bytes) / double(total))) : 0;
+            }
             if (source.drives) {
                 result.drive = true;
                 result.capacity_label = "Capacity unavailable";
@@ -191,6 +196,7 @@ class Controller final : public std::enable_shared_from_this<Controller> {
     slint::ComponentWeakHandle<App> ui_;
     Worker worker_;
     Worker browser_worker_;
+    Worker query_worker_;
     struct TreeNode {
         std::string path, label, detail;
         std::vector<std::wstring> children;
@@ -213,7 +219,7 @@ class Controller final : public std::enable_shared_from_this<Controller> {
     std::shared_ptr<const backend::Snapshot> snapshot_;
     std::shared_ptr<const Candidates> cleanup_, duplicates_, report_;
     std::unordered_map<std::string, size_t> agent_row_ids_;
-    std::string report_root_;
+    std::string report_root_, scan_label_ = "No scan yet";
     std::shared_ptr<const Candidates> grouped_source_;
     std::vector<stale::desktop::RecommendationGroup> groups_;
     std::string active_group_, active_project_, targeted_path_;
@@ -227,6 +233,7 @@ class Controller final : public std::enable_shared_from_this<Controller> {
     std::string detail_path_, activity_;
     int folder_ = 0;
     bool busy_ = false;
+    uint64_t navigation_generation_ = 0, scan_navigation_ = 0;
     bool summary_only_ = false;
     bool smoke_ = false;
     bool smoke_finished_ = false;
@@ -357,7 +364,7 @@ class Controller final : public std::enable_shared_from_this<Controller> {
             const bool readable = !listing->snapshot.entries.empty() && listing->snapshot.entries.front().metadata_ok && listing->error.empty();
             ui->set_browser_can_scan(readable && !node.blocked);
             if (ui->get_page() < 2) {
-                ui->set_status(slint::SharedString(listing->error.empty() ? "Folder contents loaded. Scan to measure folder sizes and find cleanup opportunities." : listing->error));
+                ui->set_status(slint::SharedString(listing->error.empty() ? "Folder contents loaded." : listing->error));
                 refresh_rows(ui);
             }
         }
@@ -401,7 +408,8 @@ class Controller final : public std::enable_shared_from_this<Controller> {
         });
     }
     void open_browser(const Ui& ui, const std::string& requested) {
-        if (busy_ || ui->get_review_open()) return;
+        if (ui->get_review_open()) return;
+        ++navigation_generation_;
         clear_selection(ui); clear_detail(ui);
         ui->set_page(1); ui->set_navigation_index(1); ui->set_search("");
         if (requested == "this-pc") { show_this_pc(ui); return; }
@@ -460,7 +468,8 @@ class Controller final : public std::enable_shared_from_this<Controller> {
     }
     void update_groups(const Ui& ui) {
         const int page = ui->get_page();
-        if (page == 2 || page == 3 || page == 5) group_source_page_ = page;
+        if (page < 2) group_source_page_ = 2;
+        else if (page == 2 || page == 3 || page == 5) group_source_page_ = page;
         const auto candidates = source(group_source_page_).candidates;
         if (candidates != grouped_source_) {
             grouped_source_ = candidates;
@@ -612,9 +621,11 @@ class Controller final : public std::enable_shared_from_this<Controller> {
         selected_bytes_ = 0;
         if (rows_) rows_->selection_reset();
         selection_status(ui);
+        if (rows_ && ui->get_focused_row() >= 0) inspect(ui, ui->get_focused_row());
     }
     void accept_snapshot(const Ui& ui, std::shared_ptr<backend::Snapshot> snapshot, std::shared_ptr<Candidates> candidates, bool cached, std::string cache_error) {
         finish(ui);
+        const bool navigated = !smoke_ && scan_navigation_ != navigation_generation_;
         const bool targeted = !targeted_path_.empty();
         const auto target = targeted_path_; targeted_path_.clear();
         if (targeted && snapshot->cancelled && report_) {
@@ -624,12 +635,31 @@ class Controller final : public std::enable_shared_from_this<Controller> {
         ui->set_summary_only(false);
         snapshot_ = std::move(snapshot);
         cleanup_ = std::move(candidates);
+        if (report_ && !snapshot_->cancelled) {
+            auto refreshed = std::make_shared<Candidates>(*report_);
+            std::unordered_map<std::wstring, size_t> report_paths;
+            for (size_t index = 0; index < refreshed->size(); ++index) report_paths.emplace(browser_key(refreshed->at(index).path), index);
+            std::unordered_map<std::wstring, const backend::Candidate*> current_paths;
+            for (const auto& item : *cleanup_) current_paths.emplace(browser_key(item.path), &item);
+            for (const auto& measured : snapshot_->entries) {
+                if (!measured.metadata_ok) continue;
+                const auto key = browser_key(measured.path);
+                const auto found = report_paths.find(key);
+                if (found == report_paths.end()) continue;
+                auto& item = refreshed->at(found->second);
+                item.bytes = measured.allocated_bytes; item.modified = measured.modified;
+                item.deletion_error.clear(); item.validation_token.clear();
+                const auto current = current_paths.find(key);
+                if (current != current_paths.end()) item = *current->second;
+            }
+            report_ = refreshed;
+        }
         duplicates_.reset();
         ui->set_duplicates_ready(false);
         folder_ = 0;
         clear_selection(ui);
         ui->set_has_snapshot(!snapshot_->entries.empty());
-        ui->set_root_path(slint::SharedString(snapshot_->root));
+        if (!navigated) ui->set_root_path(slint::SharedString(snapshot_->root));
         ui->set_allocated(slint::SharedString(snapshot_->entries.empty() ? "—" : bytes(snapshot_->entries[0].allocated_bytes)));
         ui->set_logical(slint::SharedString(snapshot_->entries.empty() ? "—" : bytes(snapshot_->entries[0].logical_bytes)));
         ui->set_file_count(slint::SharedString(std::to_string(snapshot_->files)));
@@ -637,6 +667,7 @@ class Controller final : public std::enable_shared_from_this<Controller> {
         std::string label = (cached ? "Saved scan from " : "Scanned ") + date(snapshot_->scanned_at, true);
         label += snapshot_->cancelled ? " · Incomplete (cancelled)" : " · Refresh to see later changes";
         ui->set_snapshot_label(slint::SharedString(label));
+        scan_label_ = label;
         const bool failed_root = snapshot_->entries.empty() || !snapshot_->entries.front().metadata_ok;
         std::string status = snapshot_->cancelled ? "Scan cancelled. Showing the files discovered so far." : failed_root ? "Could not scan this folder." : cached ? "Saved scan loaded. These sizes may have changed; refresh when ready." : "Scan complete.";
         if (snapshot_->errors) status += " " + std::to_string(snapshot_->errors) + (snapshot_->errors == 1 ? " item could not be fully read." : " items could not be fully read.");
@@ -651,18 +682,19 @@ class Controller final : public std::enable_shared_from_this<Controller> {
                 if (folded(item.path) != target_key) continue;
                 item.validation_token.clear();
                 const auto found = std::find_if(cleanup_->begin(), cleanup_->end(), [&](const auto& candidate) { return folded(candidate.path) == target_key; });
-                if (found != cleanup_->end()) { item = *found; ui->set_status("Check complete. Tick this candidate’s checkbox, then choose Review & recycle."); }
-                else ui->set_status("Folder scanned. No validated cleanup candidate was found for this folder; the saved recommendation remains read-only.");
+                if (found != cleanup_->end()) { item = *found; ui->set_status("Folder refreshed. Select it using its checkbox."); }
+                else ui->set_status("Folder scanned. No current cleanup candidate was found for this saved recommendation.");
             }
             report_ = merged; ui->set_page(5);
-        } else if (!targeted && !smoke_ && (ui->get_page() < 2 || ui->get_page() == 2 || ui->get_page() == 5)) {
+        } else if (!targeted && !navigated && !smoke_ && (ui->get_page() < 2 || ui->get_page() == 2 || ui->get_page() == 5)) {
             const bool from_cleanup = ui->get_page() == 2 || ui->get_page() == 5;
-            ui->set_page(from_cleanup || !cleanup_->empty() ? 2 : 1);
+            ui->set_page(from_cleanup ? 2 : 1);
             active_group_.clear(); active_project_.clear(); ui->set_search("");
         }
         // Invalidate only loaded live listings; their next open reattaches
         // directory totals from this scan without throwing away expansion state.
         for (auto& pair : tree_) pair.second.listing.reset();
+        if (!targeted && !navigated && !smoke_ && ui->get_page() < 2 && !failed_root) open_browser(ui, snapshot_->root);
         update_drive(ui);
         if (smoke_) ui->set_page(smoke_page_);
         if (smoke_ && smoke_page_ == 3 && !snapshot_->entries.empty()) find_duplicates(ui);
@@ -673,6 +705,7 @@ class Controller final : public std::enable_shared_from_this<Controller> {
         const auto path = string(ui->get_root_path());
         if (path.empty()) { ui->set_status(slint::SharedString("Enter a folder path or choose a folder first.")); return; }
         ++*query_generation_;
+        scan_navigation_ = navigation_generation_;
         start(ui, cached ? "Loading saved index…" : "Scanning files…", !cached);
         const auto control = control_;
         auto weak = weak_from_this();
@@ -723,9 +756,25 @@ class Controller final : public std::enable_shared_from_this<Controller> {
         const auto generation = ++*query_generation_;
         const auto serial = query_generation_;
         const int page = ui->get_page(), sort = ui->get_sort_order();
+        ui->set_snapshot_label(page == 5 ? ui->get_report_label() : slint::SharedString(scan_label_));
+        ui->set_summary_only(page == 5 || summary_only_);
         const bool only_folders = ui->get_folders_only();
         const auto query = folded(string(ui->get_search()));
         auto data = source(page);
+        const bool overview = page < 2 && snapshot_ && !summary_only_ && !snapshot_->entries.empty()
+            && (data.live ? browse_path_ != "this-pc" && browser_key(browse_path_) == browser_key(snapshot_->root) : folder_ == 0);
+        ui->set_scan_overview(overview);
+        ui->set_scope_label(slint::SharedString(page < 2 ? (data.live ? browse_path_ == "this-pc" ? "This PC" : browse_path_ : snapshot_ ? snapshot_->root : "Choose a folder") : page == 4 ? "Deletion activity" : page == 5 ? report_root_ : snapshot_ ? snapshot_->root : "Choose a folder"));
+        std::vector<Opportunity> summaries;
+        if (overview && cleanup_) {
+            for (const auto& group : stale::desktop::group_recommendations(*cleanup_)) {
+                Opportunity item{}; item.id = group.id; item.title = group.label; item.size = bytes(group.bytes);
+                item.detail = std::to_string(group.item_indices.size()) + (group.item_indices.size() == 1 ? " candidate" : " candidates");
+                summaries.push_back(item);
+                if (summaries.size() == 4) break;
+            }
+        }
+        ui->set_scan_summaries(std::make_shared<slint::VectorModel<Opportunity>>(summaries));
         ui->set_cleanup_candidate_count(data.candidates ? static_cast<int>(data.candidates->size()) : 0);
         ui->set_cleanup_ready_count(data.candidates ? static_cast<int>(std::count_if(data.candidates->begin(), data.candidates->end(), [](const auto& item) { return !item.validation_token.empty(); })) : 0);
         const int folder = data.live ? 0 : folder_;
@@ -749,14 +798,15 @@ class Controller final : public std::enable_shared_from_this<Controller> {
         ui->set_empty_message(slint::SharedString(busy_ ? "Working… Results will appear here." : page == 3 && !duplicates_ ? "Choose Find duplicates to compare file contents. This can take a while." : page == 4 ? "Deletion results will appear here, one outcome per item." : !snapshot_ ? "Choose a folder, then scan to explore its contents." : "No matching items. Try another search or folder."));
         if (!busy_ && (page == 2 || page == 5)) {
             ui->set_empty_message(!query.empty() || !active_group_.empty() ? "No candidates match this view. Clear the filter or choose another category."
-                : !snapshot_ ? "Start with Choose folder & scan above. Nothing is deleted during a scan."
+                : !snapshot_ ? "Choose a folder in the title bar, then scan to find cleanup candidates."
                 : "No cleanup candidates found in this scan. Choose another folder to scan; ordinary files are not automatically cleanup candidates.");
         }
         if (data.live) ui->set_empty_message(slint::SharedString(browse_loading_ ? "Loading folder contents…" : !data.snapshot->error.empty() ? data.snapshot->error : "This folder is empty, or no items match your filter."));
         else if (snapshot_ && (snapshot_->entries.empty() || !snapshot_->entries.front().metadata_ok))
             ui->set_empty_message("This folder could not be read. Check the path and permissions, or choose another folder.");
         auto weak = weak_from_this();
-        enqueue([weak, generation, serial, data, page, folder, sort, only_folders, query, allowed = std::move(allowed)] {
+        query_worker_.push([weak, generation, serial, data, page, folder, sort, only_folders, query, allowed = std::move(allowed)] {
+            try {
             if (serial->load() != generation) return;
             std::vector<size_t> indexes;
             const size_t count = data.candidates ? data.candidates->size() : data.outcomes ? data.outcomes->size() : data.snapshot ? data.snapshot->entries.size() : 0;
@@ -799,14 +849,27 @@ class Controller final : public std::enable_shared_from_this<Controller> {
                 self.rows_ = model;
                 ui->set_rows(model);
                 ui->set_focused_row(-1);
+                for (size_t row = 0; row < model->indexes.size(); ++row) {
+                    const auto index = model->indexes[row];
+                    const auto path = data.candidates ? data.candidates->at(index).path : data.snapshot ? data.snapshot->entries[index].path : data.outcomes ? data.outcomes->at(index).path : std::string{};
+                    if (!self.detail_path_.empty() && path == self.detail_path_) { ui->set_focused_row(static_cast<int>(row)); break; }
+                }
                 ui->set_result_label(slint::SharedString(std::to_string(model->row_count()) + (model->row_count() == 1 ? " item" : " items")));
                 self.selection_status(ui);
                 if (self.smoke_ && !self.busy_ && !self.smoke_finished_) self.end_smoke(ui, self.snapshot_ && !self.snapshot_->entries.empty() && self.snapshot_->error.empty() ? 0 : 1);
             });
+            } catch (const std::exception& error) {
+                post(weak, [generation, message = std::string(error.what())](Controller& self, const Ui& ui) {
+                    if (self.query_generation_->load() != generation) return;
+                    ui->set_status(slint::SharedString("Could not display this view: " + message));
+                });
+            }
+
         });
     }
     void inspect(const Ui& ui, int row, bool activate = false) {
         if (!rows_ || row < 0 || static_cast<size_t>(row) >= rows_->indexes.size()) return;
+        ui->set_focused_row(row);
         const auto index = rows_->indexes[row];
         auto data = rows_->source;
         std::string title, detail;
@@ -818,22 +881,22 @@ class Controller final : public std::enable_shared_from_this<Controller> {
             const auto& item = data.candidates->at(index);
             detail_path_ = item.path;
             title = item.path;
-            detail = item.reason;
+            detail = item.deletion_error.empty() ? item.reason : item.deletion_error;
             const auto classification = stale::desktop::group_recommendations(Candidates{item});
             const auto kind = classification.empty() ? std::string("review") : classification.front().id;
             detail_generated_ = kind == "builds" || kind == "dependencies" || kind == "caches";
             const bool checked = !item.validation_token.empty();
-            ui->set_detail_checked(checked); ui->set_detail_review(kind == "models" || kind == "review");
+            ui->set_detail_checked(selected_->count(item.path) != 0); ui->set_detail_review(kind == "models" || kind == "review");
             ui->set_detail_size(slint::SharedString(bytes(item.bytes)));
-            ui->set_detail_state(slint::SharedString(checked ? "Tick the checkbox, then choose Delete selected." : kind == "models" ? "Review in the application that downloaded this model." : "Tick the checkbox to select this folder for deletion."));
-            std::string metadata = item.modified > 0 ? "Last modified " + date(item.modified, true) + "." : "Saved scan has no last-modified date for this folder.";
-            if (!checked && detail_generated_) metadata += " Scanning checks its parent project so this folder can be validated.";
+            ui->set_detail_state(slint::SharedString(!item.deletion_error.empty() ? "Deletion failed. Rescan before retrying; some contents may already be gone." : selected_->count(item.path) ? "Selected for deletion" : kind == "models" ? "Review this model before selecting it." : "Not selected"));
+            std::string metadata = item.modified > 0 ? "Modified " + date(item.modified, true) + "." : "";
             if (kind == "models") metadata += " Manage model downloads in the application that downloaded them.";
             ui->set_detail_metadata(slint::SharedString(metadata));
             ui->set_detail_can_scan(!checked && kind != "models");
         } else if (data.outcomes) {
             const auto& item = data.outcomes->at(index);
-            title = item.success ? "Permanently deleted" : "Deletion failed";
+            detail_path_ = item.path;
+            title = item.path;
             detail = item.success ? item.path + " — permanently deleted." : item.message;
         } else if (data.snapshot) {
             const auto& item = data.snapshot->entries[index];
@@ -872,7 +935,7 @@ class Controller final : public std::enable_shared_from_this<Controller> {
     void toggle(const Ui& ui, int row) {
         if (busy_ || !rows_ || !rows_->source.candidates || row < 0 || static_cast<size_t>(row) >= rows_->indexes.size()) return;
         const auto& item = rows_->source.candidates->at(rows_->indexes[row]);
-        if (item.validation_token.empty() && !rows_->row_data(row)->checkable) return;
+        if (!item.deletion_error.empty() || (item.validation_token.empty() && !rows_->row_data(row)->checkable)) return;
         if (selected_->erase(item.path)) selected_bytes_ -= item.bytes;
         else { selected_->insert(item.path); selected_bytes_ += item.bytes; }
         rows_->selection_changed(row);
@@ -897,20 +960,32 @@ class Controller final : public std::enable_shared_from_this<Controller> {
             });
             auto outcomes = std::make_shared<std::vector<Outcome>>();
             for (const auto& path : result.recycled) outcomes->push_back({path, {}, true});
-            for (const auto& failure : result.failures) outcomes->push_back({{}, failure, false});
+            for (const auto& failure : result.failure_details) outcomes->push_back({failure.path, failure.reason, false});
             post(weak, [outcomes, good = result.recycled.size(), failed = outcomes->size() - result.recycled.size()](Controller& self, const Ui& ui) {
                 self.finish(ui);
                 self.outcomes_ = outcomes;
                 self.clear_selection(ui);
-                self.cleanup_.reset();
+                auto retain = [&](std::shared_ptr<const Candidates>& source) {
+                    if (!source) return;
+                    auto remaining = std::make_shared<Candidates>();
+                    for (auto candidate : *source) {
+                        const auto outcome = std::find_if(outcomes->begin(), outcomes->end(), [&](const auto& value) { return value.path == candidate.path; });
+                        if (outcome != outcomes->end()) {
+                            if (outcome->success) continue;
+                            candidate.deletion_error = outcome->message;
+                            candidate.validation_token.clear();
+                        }
+                        remaining->push_back(std::move(candidate));
+                    }
+                    source = remaining;
+                };
+                retain(self.cleanup_); retain(self.report_);
                 self.duplicates_.reset();
-                if (self.report_) { auto saved = std::make_shared<Candidates>(*self.report_); for (auto& item : *saved) item.validation_token.clear(); self.report_ = saved; }
                 ui->set_duplicates_ready(false);
-                ui->set_page(4);
-                ui->set_search(slint::SharedString(""));
-                ui->set_detail_title(slint::SharedString(""));
-                ui->set_status(slint::SharedString(std::to_string(good) + " permanently deleted; " + std::to_string(failed) + " failed. Refresh the scan before another cleanup."));
-                ui->set_snapshot_label(slint::SharedString("Sizes are from before deletion. Refresh this scan."));
+                self.clear_detail(ui);
+                ui->set_status(slint::SharedString(std::to_string(good) + " deleted; " + std::to_string(failed) + " failed." + (failed ? " Failed folders may be partly removed. Rescan before retrying." : " Remaining candidates are ready to review.")));
+                self.scan_label_ = "Sizes are from before deletion. Rescan to update totals.";
+                ui->set_report_label("Saved report · Sizes are from before deletion. Rescan to update totals.");
                 self.refresh_rows(ui);
             });
         });
@@ -962,7 +1037,7 @@ public:
                     {"cleanup_candidate_count", ui->get_cleanup_candidate_count()}, {"cleanup_ready_count", ui->get_cleanup_ready_count()},
                     {"search", string(ui->get_search())}, {"sort", ui->get_sort_order()},
                     {"detail_path", detail_path_}, {"detail", string(ui->get_detail_text())},
-                    {"summary_only", summary_only_}, {"snapshot_label", string(ui->get_snapshot_label())},
+                    {"summary_only", ui->get_summary_only()}, {"snapshot_label", string(ui->get_snapshot_label())},
                     {"snapshot_files", snapshot_ ? snapshot_->files : 0}, {"snapshot_errors", snapshot_ ? snapshot_->errors : 0},
                     {"snapshot_scanned_at", snapshot_ ? snapshot_->scanned_at : 0.0},
                     {"allocated_bytes", snapshot_ && !snapshot_->entries.empty() ? snapshot_->entries.front().allocated_bytes : 0},
@@ -970,12 +1045,15 @@ public:
                     {"drive_total_bytes", drive_total_}, {"drive_free_bytes", drive_free_},
                     {"storage_slices", drive_total_ ? Json::array({{{"id", "used"}, {"label", "Used"}, {"start", 0.0}, {"fraction", 1.0 - double(drive_free_) / double(drive_total_)}}, {{"id", "free"}, {"label", "Free"}, {"start", 1.0 - double(drive_free_) / double(drive_total_)}, {"fraction", double(drive_free_) / double(drive_total_)}}}) : Json::array()},
                     {"active_group", active_group_}, {"active_project", active_project_}, {"detail_can_scan", ui->get_detail_can_scan()}, {"detail_checked", ui->get_detail_checked()},
-                    {"review_open", ui->get_review_open()}, {"agent_enabled", ui->get_agent_enabled()}};
+                    {"review_open", ui->get_review_open()}, {"agent_enabled", ui->get_agent_enabled()},
+                    {"scan_overview", ui->get_scan_overview()}, {"scope", string(ui->get_scope_label())},
+                    {"inspector_visible", !string(ui->get_detail_name()).empty()},
+                    {"detail_selected", !detail_path_.empty() && selected_->count(detail_path_) != 0}};
             };
             if (action == "capabilities") return Json({{"ok", true}, {"protocol", 1},
-                {"actions", {"state", "theme", "navigate", "navigation-menu", "window", "drives", "tree", "tree-expand", "tree-open", "browse", "refresh-drives", "groups", "open-group", "open-project", "expand-group", "scan-detail", "check-select", "select-visible", "resize", "rows", "scan", "load-cache", "load-report", "cancel", "page", "filter", "sort", "inspect", "open", "up", "root", "select", "clear-selection", "find-duplicates", "review", "dismiss-review", "screenshot", "capabilities"}},
+                {"actions", {"state", "theme", "navigate", "navigation-menu", "window", "drives", "tree", "tree-expand", "tree-open", "browse", "refresh-drives", "groups", "open-group", "open-project", "expand-group", "scan-detail", "check-select", "select-visible", "resize", "rows", "scan", "load-cache", "load-report", "cancel", "page", "filter", "sort", "inspect", "open", "up", "root", "select", "clear-selection", "find-duplicates", "review", "dismiss-review", "close-inspector", "overview-group", "screenshot", "capabilities"}},
                 {"pages", pages}, {"max_rows", 100}, {"row_ids", "Full paths; enumerate rows before inspect/select/open. Pass view_revision to reject stale requests."},
-                {"recycle", "No agent recycle command. review opens the visible confirmation only."},
+                {"recycle", "No agent deletion-confirmation command. review opens the visible confirmation only."},
                 {"async", "Poll state until busy=false and rows_ready=true after scan/filter/page/report."}}).dump();
             if (action == "state") return state().dump();
             if (action == "drives") {
@@ -1040,7 +1118,8 @@ public:
                         const auto& item = rows_->source.candidates->at(index); id = item.path;
                         value.update({{"id", id}, {"path", item.path}, {"name", basename(item.path)}, {"bytes", item.bytes},
                             {"modified", item.modified}, {"reason", item.reason}, {"selected", selected_->count(id) != 0},
-                            {"selectable", !item.validation_token.empty()}, {"duplicate_keeper", item.duplicate_keeper}});
+                            {"selectable", rows_->row_data(row)->selectable || rows_->row_data(row)->checkable},
+                            {"validated", !item.validation_token.empty()}, {"deletion_error", item.deletion_error}, {"duplicate_keeper", item.duplicate_keeper}});
                     } else if (rows_->source.snapshot) {
                         const auto& item = rows_->source.snapshot->entries[index]; id = item.path;
                         value.update({{"id", id}, {"path", item.path}, {"name", item.name}, {"bytes", item.allocated_bytes},
@@ -1053,7 +1132,7 @@ public:
                                 {"capacity_label", string(visual.capacity_label)}, {"free_label", string(visual.free_label)}});
                         }
                     } else if (rows_->source.outcomes) {
-                        const auto& item = rows_->source.outcomes->at(index); id = "activity:" + std::to_string(index);
+                        const auto& item = rows_->source.outcomes->at(index); id = item.path;
                         value.update({{"id", id}, {"path", item.path}, {"success", item.success}, {"message", item.message}, {"selectable", false}});
                     }
                     agent_row_ids_[id] = row;
@@ -1074,7 +1153,12 @@ public:
             if (action == "cancel") { if (!ui->get_can_cancel()) throw std::runtime_error("No cancellable operation is running"); ui->invoke_cancel_work(); return state().dump(); }
             if (action == "dismiss-review") { ui->invoke_dismiss_review(); return state().dump(); }
             if (ui->get_review_open()) throw std::runtime_error("Dismiss the visible review before changing the selection or view");
-            if (busy_) throw std::runtime_error("An operation is running; poll state or cancel it first");
+            if (action == "close-inspector") { clear_detail(ui); return state().dump(); }
+            if (action == "overview-group") {
+                if (busy_ || !ui->get_scan_overview()) throw std::runtime_error("Open a completed scan overview first");
+                ui->invoke_overview_group(slint::SharedString(input.at("id").get<std::string>())); return state().dump();
+            }
+            if (busy_ && action != "browse" && action != "tree-open" && action != "tree-expand" && action != "navigate" && action != "page" && action != "filter" && action != "sort" && action != "inspect" && action != "open" && action != "up" && action != "root") throw std::runtime_error("An operation is running; poll state or cancel it first");
             if (action == "browse") {
                 open_browser(ui, input.at("path").get<std::string>());
             } else if (action == "tree-open") {
@@ -1127,12 +1211,12 @@ public:
                 ui->set_sort_order(order == "largest" ? 0 : order == "name" ? 1 : 2); refresh_rows(ui);
             } else if (action == "clear-selection") clear_selection(ui);
             else if (action == "find-duplicates") {
-                if (!snapshot_ || summary_only_) throw std::runtime_error("A complete folder scan is required before comparing content");
+                if (!snapshot_ || summary_only_ || ui->get_page() == 5) throw std::runtime_error("Open Duplicates with a current folder scan to compare contents; a saved report is not duplicate evidence");
                 find_duplicates(ui);
             } else if (action == "up") ui->invoke_go_up();
             else if (action == "root") ui->invoke_go_root();
             else if (action == "review") {
-                if (selected_->empty()) throw std::runtime_error("Select validated candidates first; saved recommendations are read-only");
+                if (selected_->empty()) throw std::runtime_error("Select candidates using their checkboxes first");
                 ui->invoke_show_review();
             } else if (action == "inspect" || action == "open" || action == "select" || action == "check-select") {
                 if (input.contains("view_revision") && input.at("view_revision").get<uint64_t>() != query_generation_->load()) throw std::runtime_error("Stale view_revision; enumerate current rows");
@@ -1216,12 +1300,14 @@ public:
                 items->push_back(std::move(item));
             }
             post(weak, [snapshot, items](Controller& self, const Ui& ui) {
-                self.accept_snapshot(ui, snapshot, std::make_shared<Candidates>(), true, {});
-                self.summary_only_ = true; self.report_ = items; self.report_root_ = snapshot->root;
+                self.finish(ui);
+                self.clear_selection(ui); self.clear_detail(ui);
+                self.summary_only_ = !self.snapshot_; self.report_ = items; self.report_root_ = snapshot->root;
+                ui->set_root_path(slint::SharedString(snapshot->root));
                 ui->set_summary_only(true);
-                const auto label = "Saved scan from " + date(snapshot->scanned_at, true) + ". Select candidates to delete permanently.";
+                const auto label = "Saved report from " + date(snapshot->scanned_at, true) + ". Sizes may have changed.";
                 ui->set_snapshot_label(slint::SharedString(label)); ui->set_report_label(slint::SharedString(label));
-                ui->set_status("Saved recommendations loaded. Select folders individually or use Select all shown.");
+                ui->set_status("Saved report loaded.");
                 ui->set_page(5); ui->set_search(""); self.refresh_rows(ui);
             });
         });
@@ -1231,6 +1317,7 @@ public:
         if (control_) control_->cancel = true;
         ++*query_generation_;
         browser_worker_.stop();
+        query_worker_.stop();
         worker_.stop();
     }
     void bind(const Ui& ui) {
@@ -1266,9 +1353,12 @@ public:
         ui->on_load_cache([weak] { if (auto self = weak.lock()) if (auto ui = self->ui_.lock()) self->scan(*ui, true); });
         ui->on_cancel_work([weak] { if (auto self = weak.lock()) if (self->control_) { self->control_->cancel = true; if (auto ui = self->ui_.lock()) (*ui)->set_status(slint::SharedString("Cancelling… Finishing the current filesystem operation.")); } });
         ui->on_change_page([weak](int page) { if (auto self = weak.lock()) if (auto ui = self->ui_.lock()) {
+            ++self->navigation_generation_;
             (*ui)->set_page(page); (*ui)->set_search(slint::SharedString("")); (*ui)->set_detail_title(slint::SharedString(""));
             self->active_group_.clear(); self->active_project_.clear(); self->clear_detail(*ui);
             if (page < 2 && self->browse_path_ != "this-pc") (*ui)->set_root_path(slint::SharedString(self->browse_path_));
+            else if (page == 5) (*ui)->set_root_path(slint::SharedString(self->report_root_));
+            else if (page == 2 && self->snapshot_) (*ui)->set_root_path(slint::SharedString(self->snapshot_->root));
             self->clear_selection(*ui); self->refresh_rows(*ui);
         }});
         ui->on_query_changed([weak] { if (auto self = weak.lock()) if (auto ui = self->ui_.lock()) self->refresh_rows(*ui); });
@@ -1289,6 +1379,10 @@ public:
         }});
         ui->on_go_root([weak] { if (auto self = weak.lock()) if (auto ui = self->ui_.lock()) { if (self->source((*ui)->get_page()).live) { self->open_browser(*ui, "this-pc"); return; } self->folder_ = 0; (*ui)->set_search(slint::SharedString("")); self->refresh_rows(*ui); } });
         ui->on_find_copies([weak] { if (auto self = weak.lock()) if (auto ui = self->ui_.lock()) self->find_duplicates(*ui); });
+        ui->on_overview_group([weak](slint::SharedString id) { if (auto self = weak.lock()) if (auto ui = self->ui_.lock()) {
+            (*ui)->set_page(2); self->update_groups(*ui); self->open_group(*ui, string(id));
+        } });
+        ui->on_close_inspector([weak] { if (auto self = weak.lock()) if (auto ui = self->ui_.lock()) self->clear_detail(*ui); });
         ui->on_clear_selection([weak] { if (auto self = weak.lock()) if (auto ui = self->ui_.lock()) self->clear_selection(*ui); });
         ui->on_recycle_selected([weak] { if (auto self = weak.lock()) if (auto ui = self->ui_.lock()) self->recycle(*ui); });
         ui->on_reveal_detail([weak] { if (auto self = weak.lock()) if (auto ui = self->ui_.lock()) if (!self->detail_path_.empty() && !backend::reveal(self->detail_path_)) (*ui)->set_status(slint::SharedString("Windows could not open this location. It may have moved since the scan.")); });

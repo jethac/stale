@@ -73,7 +73,7 @@ try {
     $null = Invoke-Agent @{action='scan';path=$fixture}
     $state = Ready
     Assert ($state.snapshot_files -eq 2) 'Fixture scan file count is wrong.'
-    Assert ($state.selection_bar_visible -and $state.selection_label -eq '' -and $state.cleanup_ready_count -eq 1) 'Cleanup must explain selection before anything is selected.'
+    Assert ($state.scan_overview -and $state.page -eq 'browse' -and $state.selection_count -eq 0) 'A completed scan must open its overview without selecting anything.'
     Assert ($state.drive_total_bytes -gt 0 -and $state.drive_free_bytes -le $state.drive_total_bytes) 'Drive measurements are invalid.'
     $fractionSum = ($state.storage_slices | Measure-Object -Property fraction -Sum).Sum
     Assert ([math]::Abs($fractionSum - 1.0) -lt 0.00001) 'Storage ring fractions must sum to capacity.'
@@ -98,7 +98,8 @@ try {
         Assert ($state.window_maximized -eq ($operation -eq 'maximize')) 'Custom window control failed.'
     }
     $null = Invoke-Agent @{action='page';name='cleanup'}
-    $null = Ready
+    $state = Ready
+    Assert ($state.selection_bar_visible -and $state.selection_label -eq '' -and $state.cleanup_ready_count -eq 1) 'Cleanup must expose its action bar before anything is selected.'
     $groups = Invoke-Agent @{action='groups'}
     Assert ($groups.ok -and $groups.groups.Count -eq 1 -and $groups.groups[0].id -eq 'dependencies') 'Expected dependency group.'
     $null = Invoke-Agent @{action='open-project';id=$groups.groups[0].projects[0].id}
@@ -135,10 +136,10 @@ try {
     } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $reportPath -Encoding utf8
     $null = Invoke-Agent @{action='load-report';path=$reportPath}
     $state = Ready
-    Assert ($state.summary_only -and $state.page -eq 'recommendations') 'Report is not visibly read-only.'
+    Assert ($state.summary_only -and $state.page -eq 'recommendations') 'Report source is not identified as a saved summary.'
     Assert ($state.cleanup_ready_count -eq 0 -and $state.cleanup_candidate_count -eq 1 -and $state.selection_bar_visible) 'Saved cleanup must expose its unchecked state.'
     $rows = Invoke-Agent @{action='rows';limit=10}
-    Assert ($rows.rows.Count -eq 1 -and -not $rows.rows[0].selectable) 'Imported candidate became selectable.'
+    Assert ($rows.rows.Count -eq 1 -and $rows.rows[0].selectable -and -not $rows.rows[0].validated) 'Imported candidate must be selectable without trusting its forged validation token.'
     $result = Invoke-Agent @{action='select';id=$rows.rows[0].id;selected=$true}
     Assert ($result.ok -and $result.selection_count -eq 1 -and $result.cleanup_ready_count -eq 0) 'Saved selection must not trust imported validation tokens.'
     $null = Invoke-Agent @{action='clear-selection'}

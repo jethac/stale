@@ -546,7 +546,7 @@ std::vector<Candidate> cleanup_candidates(const Snapshot& s, bool include_scan_r
         else if (category == Category::Dependencies) c.reason = "npm dependency tree identified by .package-lock.json. Reinstall required; review local modifications.";
         else if (category == Category::Agent) c.reason = "Known agent/editor cache or diagnostic log tree with no modifications in 14 days. Review cached pasted content before removal. Sessions, worktrees, models and credentials are excluded.";
         else c.reason = "Recognized generated cache. Its application may need to regenerate or download data.";
-        c.reason += " Recycle Bin contents still occupy disk space until emptied."; result.push_back(std::move(c)); covered[i] = true;
+        result.push_back(std::move(c)); covered[i] = true;
     }
     return result;
 }
@@ -565,7 +565,7 @@ std::vector<Candidate> find_duplicates(const Snapshot& s, ScanControl* control) 
             for (size_t i = 1; i < items.size(); ++i) {
                 auto e = items[i]; Candidate c; c.path = e->path; c.modified = e->modified; c.bytes = e->allocated_bytes;
                 c.duplicate_group = group; c.duplicate_keeper = items[0]->path; c.validation_token = fingerprint({e}) + ":" + pair.first;
-                c.reason = "SHA-256 content match. Retain: " + c.duplicate_keeper + ". Review references before recycling; space remains used in Recycle Bin.";
+                c.reason = "SHA-256 content match. Retain: " + c.duplicate_keeper + ". Review references before permanent deletion.";
                 result.push_back(std::move(c));
             }
         }
@@ -786,7 +786,10 @@ static RecycleResult remove_candidates(const std::vector<Candidate>& candidates,
             if (remaining != INVALID_FILE_ATTRIBUTES || (remaining_error != ERROR_FILE_NOT_FOUND && remaining_error != ERROR_PATH_NOT_FOUND))
                 throw std::runtime_error("Deletion was incomplete or could not be verified; some contents may already be gone");
             result.recycled.push_back(c.path);
-        } catch (const std::exception& e) { result.failures.push_back(c.path + ": " + e.what()); }
+        } catch (const std::exception& e) {
+            result.failures.push_back(c.path + ": " + e.what());
+            result.failure_details.push_back({c.path, e.what()});
+        }
     }
     return result;
 }

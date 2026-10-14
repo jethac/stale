@@ -47,10 +47,13 @@ struct Candidate {
     std::string validation_token; // Opaque scan metadata fingerprint; preserve for recycle().
     std::string duplicate_keeper; // This independently verified copy must remain present.
     Category category = Category::None; // Classification evidence; never a deletion guarantee.
+    std::string deletion_error; // Session-only failure; rescan before retrying this item.
 };
+struct DeletionFailure { std::string path, reason; };
 struct RecycleResult {
     std::vector<std::string> recycled;
     std::vector<std::string> failures;
+    std::vector<DeletionFailure> failure_details;
 };
 Snapshot scan(const std::string& root, ScanControl* control = nullptr);
 std::vector<Candidate> cleanup_candidates(const Snapshot& snapshot, bool include_scan_root = false);

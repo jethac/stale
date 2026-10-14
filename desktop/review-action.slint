@@ -1,0 +1,39 @@
+import { MaterialPalette, MaterialText, StateLayerArea } from "@material";
+
+// Explicit keyboard focus for the in-window confirmation. The fork's public
+// button wrappers do not expose focus(), so this uses its shared state layer.
+export component ReviewAction inherits Rectangle {
+    in property <string> text;
+    in property <bool> destructive;
+    in property <bool> enabled: true;
+    callback clicked;
+    callback tabbed;
+    public function take-focus() { keys.focus(); }
+    forward-focus: keys;
+    min-width: label.preferred-width + 40px;
+    height: 44px;
+    border-radius: pointer.pressed ? 12px : 22px;
+    animate border-radius { duration: 120ms; }
+    background: !root.enabled ? MaterialPalette.surface-container-highest : root.destructive ? MaterialPalette.error : MaterialPalette.secondary-container;
+    border-width: keys.has-focus ? 2px : 0px;
+    border-color: MaterialPalette.on-surface;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    keys := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Tab { root.tabbed(); return accept; }
+            if event.text == Key.Return || event.text == " " { root.clicked(); return accept; }
+            reject
+        }
+    }
+    pointer := TouchArea { enabled: root.enabled; clicked => { keys.focus(); root.clicked(); } }
+    label := MaterialText {
+        width: parent.width; height: parent.height;
+        text: root.text; font-size: 14px; font-weight: 600;
+        horizontal-alignment: center; vertical-alignment: center;
+        color: !root.enabled ? MaterialPalette.on-surface-variant : root.destructive ? MaterialPalette.on-error : MaterialPalette.on-secondary-container;
+    }
+}
