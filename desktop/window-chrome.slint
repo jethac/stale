@@ -1,0 +1,29 @@
+import { MaterialPalette, StateLayerArea } from "@material";
+
+export component CaptionButton inherits Rectangle {
+    in property <string> label;
+    in property <string> commands;
+    in property <bool> close-button;
+    callback clicked();
+    width: 46px;
+    height: 48px;
+    background: root.close-button && area.has-hover ? #c42b1c : transparent;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+    area := StateLayerArea {
+        width: parent.width; height: parent.height;
+        tooltip: root.label;
+        clicked => { root.clicked(); }
+    }
+    Path {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 12px; height: 12px;
+        viewbox-width: 10; viewbox-height: 10;
+        commands: root.commands;
+        fill: transparent;
+        stroke: root.close-button && area.has-hover ? white : MaterialPalette.on_surface;
+        stroke-width: 1px;
+    }
+}
