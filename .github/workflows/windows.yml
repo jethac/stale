@@ -1,0 +1,68 @@
+name: Windows
+on:
+  push:
+    branches: [main, 'feat/windows-slint']
+    tags: ['windows-v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            build/windows/cargo
+          key: stale-windows-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+      - name: Build and test
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+      - name: Test visible application agent interface
+        shell: pwsh
+        run: ./scripts/test-agent.ps1
+      - name: Package Windows build
+        shell: pwsh
+        run: |
+          ./scripts/package-windows.ps1
+          $hash = (Get-FileHash dist/Stale-Windows-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  Stale-Windows-x64.zip" | Set-Content dist/SHA256SUMS-Windows.txt -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Stale-Windows-x64
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/windows-v')
+    needs: windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Stale-Windows-x64
+          path: dist
+      - name: Publish Windows preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --prerelease \
+            --title "Stale ${RELEASE_TAG#windows-} for Windows (preview)" \
+            --notes "Windows 10/11 x64 preview. Extract the ZIP and run Stale.exe. Requires the Microsoft Visual C++ x64 runtime. This build is unsigned. Includes the Material desktop UI, all-drive browsing, cleanup review, and the opt-in local agent interface. See the bundled README.md and AGENT_API.md. SHA-256 checksums are attached."
